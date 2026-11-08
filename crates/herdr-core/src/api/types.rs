@@ -728,6 +728,10 @@ pub struct FileResult {
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct MachineAddParams {
+    /// Remote protocol. Classic requires an explicit --session and never installs Core.
+    #[arg(long, value_enum, default_value = "modern")]
+    #[serde(default)]
+    pub backend: crate::machines::Backend,
     /// How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config.
     #[arg(required_unless_present = "via", conflicts_with = "via")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -763,6 +767,44 @@ pub struct MachineAddParams {
 pub struct MachineParams {
     /// The machine's name.
     pub machine: String,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClassicReadParams {
+    /// The registered classic machine name.
+    pub machine: String,
+    /// Opaque native pane ID, as returned by classic.list (not a Core address).
+    pub pane_id: String,
+    /// Expected native runtime ID; reject an observed pane/runtime mismatch.
+    pub terminal_id: String,
+    #[arg(long, default_value_t = 100)]
+    #[serde(default = "classic_lines")]
+    /// Recent native text lines to request (1..1000).
+    pub lines: u32,
+}
+
+fn classic_lines() -> u32 {
+    100
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClassicSendParams {
+    /// The registered classic machine name.
+    pub machine: String,
+    /// Opaque native pane ID returned by classic.list.
+    pub pane_id: String,
+    /// Expected native runtime ID returned by classic.list.
+    pub terminal_id: String,
+    /// Literal text. No implicit Enter and no command completion/wait semantics.
+    #[arg(long, default_value = "")]
+    #[serde(default)]
+    pub text: String,
+    /// Native classic key names (for example --key enter).
+    #[arg(long = "key")]
+    #[serde(default)]
+    pub keys: Vec<String>,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]

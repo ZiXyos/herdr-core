@@ -208,6 +208,14 @@ pub struct MachineView {
 }
 
 pub fn view(st: &State, m: &Machine) -> MachineView {
+    if m.backend == crate::machines::Backend::Classic {
+        return MachineView {
+            machine: m.clone(),
+            state: if crate::classic::ENABLED { "on_demand" } else { "backend_disabled" }.into(),
+            since_ms: None,
+            why: None,
+        };
+    }
     let (state, since_ms, why) = match st.lines.get(&m.id) {
         None | Some(LineState::Connecting) => ("connecting", None, None),
         Some(LineState::Connected(_)) => ("connected", None, None),
@@ -224,7 +232,13 @@ fn reconnect_max() -> Duration {
 
 /// Keeps the line to every added machine up.
 pub fn start_all(core: &Arc<Core>) {
-    let ids: Vec<String> = core.lock().machines.iter().map(|m| m.id.clone()).collect();
+    let ids: Vec<String> = core
+        .lock()
+        .machines
+        .iter()
+        .filter(|m| m.backend == crate::machines::Backend::Modern)
+        .map(|m| m.id.clone())
+        .collect();
     for id in ids {
         keep_up(core, id);
     }
@@ -827,6 +841,11 @@ pub fn route(core: &Core, method: &str, params: &Value) -> Result<Option<(To, Va
         None
     };
     let Some(to) = to else { return Ok(None) };
+    if let To::Machine(m) = &to
+        && m.backend == crate::machines::Backend::Classic
+    {
+        return Err(crate::classic::unsupported(method));
+    }
     // Our callers travel by our id (the machine names them; see `from_peer`);
     // a peer names callers from here itself.
     if let (To::Machine(_), Some(caller)) = (&to, params["caller"].as_str()) {
@@ -853,6 +872,9 @@ pub async fn dialed(core: &Core, id: &str) {
 
 /// The open line to `m` (waiting while it is first dialed), or why there is none.
 async fn line(core: &Core, m: &Machine) -> Result<Arc<Line>, RpcError> {
+    if m.backend == crate::machines::Backend::Classic {
+        return Err(crate::classic::unsupported("modern RPC/stream"));
+    }
     dialed(core, &m.id).await;
     let st = core.lock();
     match st.lines.get(&m.id) {

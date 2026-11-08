@@ -29,6 +29,14 @@
         ],
         "type": "object"
       },
+      "Backend": {
+        "description": "Wire protocol selected explicitly when registering a machine.",
+        "enum": [
+          "modern",
+          "classic"
+        ],
+        "type": "string"
+      },
       "Children": {
         "enum": [
           "any",
@@ -418,6 +426,20 @@
         ],
         "type": "object"
       },
+      "Inventory": {
+        "properties": {
+          "panes": {
+            "items": {
+              "$ref": "#/components/schemas/Pane"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "panes"
+        ],
+        "type": "object"
+      },
       "KeysResult": {
         "properties": {
           "status": {
@@ -469,12 +491,16 @@
       },
       "Machine": {
         "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/Backend",
+            "default": "modern"
+          },
           "host": {
-            "description": "What that core calls itself (its hostname).",
+            "description": "What that core calls itself (its hostname); SSH target for classic.",
             "type": "string"
           },
           "id": {
-            "description": "The other core's permanent id.",
+            "description": "The other core's permanent id. Empty for classic: it has no Core identity.",
             "type": "string"
           },
           "name": {
@@ -482,7 +508,7 @@
             "type": "string"
           },
           "session": {
-            "description": "The hc session there (null: its default).",
+            "description": "The remote session (null: modern default; classic always requires a name).",
             "type": [
               "string",
               "null"
@@ -533,12 +559,16 @@
       "MachineView": {
         "description": "A machine as `machine ls` and `ls` show it: its profile and its line now.",
         "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/Backend",
+            "default": "modern"
+          },
           "host": {
-            "description": "What that core calls itself (its hostname).",
+            "description": "What that core calls itself (its hostname); SSH target for classic.",
             "type": "string"
           },
           "id": {
-            "description": "The other core's permanent id.",
+            "description": "The other core's permanent id. Empty for classic: it has no Core identity.",
             "type": "string"
           },
           "name": {
@@ -546,7 +576,7 @@
             "type": "string"
           },
           "session": {
-            "description": "The hc session there (null: its default).",
+            "description": "The remote session (null: modern default; classic always requires a name).",
             "type": [
               "string",
               "null"
@@ -600,6 +630,29 @@
         ],
         "type": "object"
       },
+      "Pane": {
+        "properties": {
+          "pane_id": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane_id",
+          "terminal_id",
+          "workspace_id",
+          "tab_id"
+        ],
+        "type": "object"
+      },
       "PutResult": {
         "properties": {
           "bytes": {
@@ -643,6 +696,17 @@
           "text",
           "complete",
           "how"
+        ],
+        "type": "object"
+      },
+      "ReadResult2": {
+        "properties": {
+          "read": {
+            "$ref": "#/components/schemas/Text"
+          }
+        },
+        "required": [
+          "read"
         ],
         "type": "object"
       },
@@ -942,6 +1006,18 @@
         },
         "required": [
           "turn"
+        ],
+        "type": "object"
+      },
+      "SendResult2": {
+        "properties": {
+          "accepted": {
+            "description": "Classic accepted input; not a claim that the shell executed it successfully.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "accepted"
         ],
         "type": "object"
       },
@@ -1359,6 +1435,39 @@
           "screen",
           "cols",
           "rows"
+        ],
+        "type": "object"
+      },
+      "Text": {
+        "properties": {
+          "pane_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane_id",
+          "workspace_id",
+          "tab_id",
+          "text",
+          "revision",
+          "truncated"
         ],
         "type": "object"
       },
@@ -3562,7 +3671,311 @@
       }
     },
     {
-      "description": "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
+      "description": "Discover native classic pane/runtime and workspace/tab associations; no focus or agent-status inference.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        }
+      ],
+      "name": "classic.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The machine's name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The machine's name.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Inventory"
+        }
+      }
+    },
+    {
+      "description": "Read bounded recent native text after checking the observed pane/runtime association. Not a raw terminal stream.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        }
+      ],
+      "name": "classic.read",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Recent native text lines to request (1..1000).",
+          "name": "lines",
+          "required": false,
+          "schema": {
+            "default": 100,
+            "description": "Recent native text lines to request (1..1000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID, as returned by classic.list (not a Core address).",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID, as returned by classic.list (not a Core address).",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID; reject an observed pane/runtime mismatch.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID; reject an observed pane/runtime mismatch.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ReadResult2"
+        }
+      }
+    },
+    {
+      "description": "Explicit native text/key input. No implicit Enter, focus, retry or wait. Identity preflight is not atomic boot fencing.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_outcome_unknown"
+          },
+          "message": "classic_outcome_unknown"
+        }
+      ],
+      "name": "classic.send",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Native classic key names (for example --key enter).",
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Native classic key names (for example --key enter).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID returned by classic.list.",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID returned by classic.list.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
+          "name": "text",
+          "required": false,
+          "schema": {
+            "default": "",
+            "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SendResult2"
+        }
+      }
+    },
+    {
+      "description": "Register a machine using the explicit backend (default modern). Classic requires a named session and probes only its native API; never installs Core.",
       "errors": [
         {
           "code": -32602,
@@ -3570,6 +3983,13 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
         },
         {
           "code": -32000,
@@ -3605,11 +4025,49 @@
             "kind": "incompatible"
           },
           "message": "incompatible"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
         }
       ],
       "name": "machine.add",
       "paramStructure": "by-name",
       "params": [
+        {
+          "description": "Remote protocol. Classic requires an explicit --session and never installs Core.",
+          "name": "backend",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/Backend",
+            "default": "modern",
+            "description": "Remote protocol. Classic requires an explicit --session and never installs Core."
+          }
+        },
         {
           "description": "What to call it here (default: the target's host).",
           "name": "name",
@@ -3690,7 +4148,7 @@
       }
     },
     {
-      "description": "Dial a machine now instead of at its next retry (after a login), and report its line.",
+      "description": "Dial a modern machine now, or probe an on-demand classic endpoint; report its profile and transport policy.",
       "errors": [
         {
           "code": -32000,
@@ -3698,6 +4156,34 @@
             "kind": "machine_unknown"
           },
           "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
         }
       ],
       "name": "machine.connect",

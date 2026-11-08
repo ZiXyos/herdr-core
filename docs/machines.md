@@ -5,6 +5,12 @@ The program lives there. Losing your connection does not end it.
 
 [Back to the README](../README.md) · [Command reference](commands.md#hc-machine)
 
+The default backend is modern Core. An optional local `classic-backend` build
+can instead connect to an existing classic 0.9.5 named session with
+`machine add --backend classic --session NAME`, without installing Core there.
+It supports separate `classic list/read/send` commands, not modern terminal
+streams or run/wait semantics. See [Classic backend](classic-backend.md).
+
 ## Add a machine over SSH
 
 Use the same target you would give SSH, including a Host from your SSH config:

@@ -13,8 +13,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] =
-    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
+pub const FEATURES: &[&str] = &[
+    "framed",
+    "attach",
+    "events",
+    "status",
+    "shell",
+    "resize_notifications",
+    "automatic_input",
+    #[cfg(feature = "classic-backend")]
+    "classic_control",
+];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -131,15 +140,24 @@ methods! { Ctx<'_>;
     "events.subscribe" => events_subscribe, SubscribeParams => SubscribeResult,
         "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
         errors ["not_found", "machine_unknown"];
+    "classic.list" => classic_list, MachineParams => crate::classic::Inventory,
+        "Discover native classic pane/runtime and workspace/tab associations; no focus or agent-status inference.",
+        errors ["machine_unknown", "backend_disabled", "unsupported_backend_capability", "classic_protocol", "classic_transport", "classic_remote"];
+    "classic.read" => classic_read, ClassicReadParams => crate::classic::ReadResult,
+        "Read bounded recent native text after checking the observed pane/runtime association. Not a raw terminal stream.",
+        errors ["machine_unknown", "backend_disabled", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote"];
+    "classic.send" => classic_send, ClassicSendParams => crate::classic::SendResult,
+        "Explicit native text/key input. No implicit Enter, focus, retry or wait. Identity preflight is not atomic boot fencing.",
+        errors ["machine_unknown", "backend_disabled", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote", "classic_outcome_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
-        "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name.",
-        errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible"];
+        "Register a machine using the explicit backend (default modern). Classic requires a named session and probes only its native API; never installs Core.",
+        errors ["invalid_params", "backend_disabled", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible", "unsupported_backend_capability", "classic_transport", "classic_protocol", "classic_remote"];
     "machine.list" => machine_list, Empty => MachineListResult,
         "The machines this core has added.",
         errors [];
     "machine.connect" => machine_connect, MachineParams => crate::remote::MachineView,
-        "Dial a machine now instead of at its next retry (after a login), and report its line.",
-        errors ["machine_unknown"];
+        "Dial a modern machine now, or probe an on-demand classic endpoint; report its profile and transport policy.",
+        errors ["machine_unknown", "backend_disabled", "classic_transport", "classic_protocol", "classic_remote"];
     "machine.rename" => machine_rename, MachineRenameParams => crate::machines::Machine,
         "Give a machine a new name here. Only this core's name for it changes.",
         errors ["invalid_params", "name_taken", "machine_unknown"];
@@ -257,6 +275,7 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
     // Each machine at once, each given a moment: a slow one never holds up the list.
     let asks: Vec<_> = machines
         .iter()
+        .filter(|m| m.backend == crate::machines::Backend::Modern)
         .map(|m| {
             let (core, m, params) = (core.core.clone(), m.clone(), serde_json::to_value(&p).unwrap_or_default());
             tokio::spawn(async move {
@@ -633,10 +652,44 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
             }),
     };
     name(&core.lock())?;
+    if p.backend == crate::machines::Backend::Classic {
+        if p.install {
+            return Err(crate::classic::unsupported("installation"));
+        }
+        let session = p.session.as_deref().ok_or_else(|| RpcError::invalid_params("classic requires --session"))?;
+        let version = crate::classic::probe(&core.paths, to, session).await?;
+        let mut st = core.lock();
+        if st
+            .machines
+            .iter()
+            .any(|m| m.backend == p.backend && m.target == target && m.via == via && m.session == p.session)
+        {
+            return Err(RpcError::new(
+                "already_added",
+                "classic host/session already registered",
+                "use its existing machine name",
+            ));
+        }
+        let machine = crate::machines::Machine {
+            backend: p.backend,
+            name: name(&st)?,
+            host: target.clone(),
+            target,
+            via,
+            temporary: p.temporary,
+            session: p.session,
+            id: String::new(),
+            version,
+        };
+        st.machines.push(machine.clone());
+        crate::machines::save(&core.paths.state, &st.machines);
+        return Ok(machine);
+    }
     let hello = crate::machines::hello(&core.paths, to, p.session.as_deref()).await?;
     let text = |k: &str| hello["core"][k].as_str().unwrap_or_default().to_string();
     let mut st = core.lock();
     let machine = crate::machines::Machine {
+        backend: p.backend,
         name: name(&st)?,
         target,
         via,
@@ -673,6 +726,23 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
     Ok(machine)
 }
 
+fn classic_machine(core: &Core, name: &str) -> Result<crate::machines::Machine, RpcError> {
+    let st = core.lock();
+    st.machines.iter().find(|m| m.name == name).cloned().ok_or_else(|| crate::machines::unknown(&st.machines, name))
+}
+
+async fn classic_list(core: Ctx<'_>, p: MachineParams) -> Result<crate::classic::Inventory, RpcError> {
+    crate::classic::list(&core.paths, &classic_machine(core, &p.machine)?).await
+}
+
+async fn classic_read(core: Ctx<'_>, p: ClassicReadParams) -> Result<crate::classic::ReadResult, RpcError> {
+    crate::classic::read(&core.paths, &classic_machine(core, &p.machine)?, &p).await
+}
+
+async fn classic_send(core: Ctx<'_>, p: ClassicSendParams) -> Result<crate::classic::SendResult, RpcError> {
+    crate::classic::send(&core.paths, &classic_machine(core, &p.machine)?, &p).await
+}
+
 async fn machine_list(core: Ctx<'_>, _: Empty) -> Result<MachineListResult, RpcError> {
     let st = core.lock();
     Ok(MachineListResult { machines: st.machines.iter().map(|m| crate::remote::view(&st, m)).collect() })
@@ -687,6 +757,10 @@ async fn machine_connect(core: Ctx<'_>, p: MachineParams) -> Result<crate::remot
             .cloned()
             .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?
     };
+    if m.backend == crate::machines::Backend::Classic {
+        crate::classic::probe(&core.paths, m.reach(), m.session.as_deref().unwrap_or_default()).await?;
+        return Ok(crate::remote::view(&core.lock(), &m));
+    }
     let connected = matches!(core.lock().lines.get(&m.id), Some(crate::remote::LineState::Connected(_)));
     if !connected {
         crate::remote::keep_up(core.core, m.id.clone());
@@ -707,7 +781,7 @@ async fn machine_rename(core: Ctx<'_>, p: MachineRenameParams) -> Result<crate::
     }
     let id = st.machines[i].id.clone();
     st.machines[i].name = p.new_name.clone();
-    if p.new_name != p.machine {
+    if p.new_name != p.machine && st.machines[i].backend == crate::machines::Backend::Modern {
         crate::remote::rename_mirror(core, &mut st, &id, &p.machine, &p.new_name);
     }
     crate::machines::save(&core.paths.state, &st.machines);
@@ -722,7 +796,9 @@ async fn machine_rm(core: Ctx<'_>, p: MachineParams) -> Result<RemoveResult, Rpc
         .position(|m| m.name == p.machine)
         .ok_or_else(|| crate::machines::unknown(&st.machines, &p.machine))?;
     let gone = st.machines.remove(i);
-    crate::remote::forget(core, &mut st, &gone.id);
+    if gone.backend == crate::machines::Backend::Modern {
+        crate::remote::forget(core, &mut st, &gone.id);
+    }
     crate::machines::save(&core.paths.state, &st.machines);
     let last_on_target = !st.machines.iter().any(|m| m.target == gone.target);
     drop(st);

@@ -20,6 +20,16 @@ pub(super) enum MachineCmd {
     Rm(MachineParams),
 }
 
+#[derive(Subcommand)]
+pub(super) enum ClassicCmd {
+    /// Observe native pane/runtime and workspace/tab IDs, without focusing.
+    List(MachineParams),
+    /// Read recent native text (not a stream).
+    Read(crate::api::ClassicReadParams),
+    /// Send explicit native text/keys, with no retry or implicit Enter.
+    Send(crate::api::ClassicSendParams),
+}
+
 /// A person who can answer ssh's questions (a password, a code, a host key).
 fn at_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
@@ -38,13 +48,20 @@ pub(super) fn machine(
     let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
     Ok(match action {
         MachineCmd::Add(p) => {
+            if p.backend == crate::machines::Backend::Classic && p.install {
+                return Err(crate::classic::unsupported("installation"));
+            }
             let target = p.via.as_ref().or(p.target.as_ref()).cloned().unwrap_or_default();
             let reach = crate::machines::Reach { target: &target, via: p.via.is_some() };
             if at_terminal() {
                 crate::machines::login(paths, reach)?;
             }
             let m = match call("machine.add", to(&p)) {
-                Err(e) if (p.install || at_terminal()) && matches!(e.kind.as_str(), "hc_missing" | "incompatible") => {
+                Err(e)
+                    if p.backend == crate::machines::Backend::Modern
+                        && (p.install || at_terminal())
+                        && matches!(e.kind.as_str(), "hc_missing" | "incompatible") =>
+                {
                     let what = if e.kind == "hc_missing" { "has no hc" } else { "has an hc too old to talk to" };
                     if !p.install {
                         eprint!("{target} {what}. Copy this hc ({}) there? [Y/n] ", env!("CARGO_PKG_VERSION"));
@@ -60,7 +77,13 @@ pub(super) fn machine(
                 }
                 other => other?,
             };
-            let human = format!("added {}: {} answers, hc {}", s(&m["name"]), s(&m["target"]), s(&m["version"]));
+            let human = format!(
+                "added {}: {} answers, {} {}",
+                s(&m["name"]),
+                s(&m["target"]),
+                s(&m["backend"]),
+                s(&m["version"])
+            );
             Out { json: m, human }
         }
         MachineCmd::Ls => {
@@ -73,9 +96,10 @@ pub(super) fn machine(
                     let session = m["session"].as_str().map(|x| format!(" session {x}")).unwrap_or_default();
                     let state = line_state(m);
                     format!(
-                        "{:<16} {state}  \x1b[2m{}{session} \u{b7} hc {}\x1b[22m",
+                        "{:<16} {state}  \x1b[2m{}{session} \u{b7} {} {}\x1b[22m",
                         s(&m["name"]),
                         s(&m["target"]),
+                        s(&m["backend"]),
                         s(&m["version"])
                     )
                 })
@@ -117,6 +141,9 @@ pub(super) fn machine(
                     "see `hc machine ls`",
                 ));
             };
+            if m["backend"] == "classic" {
+                return Err(crate::classic::unsupported("machine.update"));
+            }
             let version = crate::machines::install(paths, reach_of(&m), m["session"].as_str())?;
             let human = format!("{} now runs {version}; its terminals kept running", p.machine);
             Out { json: json!({"machine": p.machine, "version": version}), human }

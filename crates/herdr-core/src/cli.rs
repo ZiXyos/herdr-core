@@ -78,6 +78,11 @@ enum Cmd {
         #[command(subcommand)]
         action: MachineCmd,
     },
+    /// Native classic control plane; not Core terminals or raw streams.
+    Classic {
+        #[command(subcommand)]
+        action: ClassicCmd,
+    },
     /// Follow fact changes as they happen (one JSON line each when piped).
     Events(SubscribeParams),
     /// Templates you can run by name (~/.config/herdr-core/templates).
@@ -628,6 +633,15 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         }
         Cmd::Update { from: Some(from), force, .. } => update(&paths, &from, force)?,
         Cmd::Machine { action } => machine(&paths, action, call)?,
+        Cmd::Classic { action } => {
+            let (method, params) = match action {
+                ClassicCmd::List(p) => ("classic.list", to(&p)),
+                ClassicCmd::Read(p) => ("classic.read", to(&p)),
+                ClassicCmd::Send(p) => ("classic.send", to(&p)),
+            };
+            let r = call(method, params)?;
+            Out { human: serde_json::to_string_pretty(&r).unwrap_or_default(), json: r }
+        }
         Cmd::File { action } => match file(action, asked, call)? {
             Some(out) => out,
             None => return Ok(None),
@@ -875,6 +889,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("server status", "server.status"),
     ("server stop", "server.stop"),
     ("server restart", "server.restart"),
+    ("classic list", "classic.list"),
+    ("classic read", "classic.read"),
+    ("classic send", "classic.send"),
     ("machine add", "machine.add"),
     ("machine ls", "machine.list"),
     ("machine login", "machine.connect"),
