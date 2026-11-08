@@ -48,6 +48,7 @@ More
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')
+  classic list|read|send       native classic control (machine add --backend classic --session name)
   connect                     the API over stdin/stdout (ssh box hc connect)
   schema                      the API as JSON Schema, for app builders
 
@@ -84,6 +85,76 @@ Options:
       --observe            Watch only: never type or resize
       --history <HISTORY>  Scrollback lines to show first (main screen only) [default: 0]
   -h, --help               Print help
+```
+
+## hc classic
+
+```text
+Native classic control plane; not Core terminals or raw streams
+
+Usage: hc classic [OPTIONS] <COMMAND>
+
+Commands:
+  list  Observe native pane/runtime and workspace/tab IDs, without focusing
+  read  Read recent native text (not a stream)
+  send  Send explicit native text/keys, with no retry or implicit Enter
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc classic list
+
+```text
+Observe native pane/runtime and workspace/tab IDs, without focusing
+
+Usage: hc classic list [OPTIONS] <MACHINE>
+
+Arguments:
+  <MACHINE>  The machine's name
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc classic read
+
+```text
+Read recent native text (not a stream)
+
+Usage: hc classic read [OPTIONS] <MACHINE> <PANE_ID> <TERMINAL_ID>
+
+Arguments:
+  <MACHINE>      The registered classic machine name
+  <PANE_ID>      Opaque native pane ID, as returned by classic.list (not a Core address)
+  <TERMINAL_ID>  Expected native runtime ID; reject an observed pane/runtime mismatch
+
+Options:
+      --json           JSON output even in a terminal
+      --lines <LINES>  Recent native text lines to request (1..1000) [default: 100]
+  -h, --help           Print help
+```
+
+## hc classic send
+
+```text
+Send explicit native text/keys, with no retry or implicit Enter
+
+Usage: hc classic send [OPTIONS] <MACHINE> <PANE_ID> <TERMINAL_ID>
+
+Arguments:
+  <MACHINE>      The registered classic machine name
+  <PANE_ID>      Opaque native pane ID returned by classic.list
+  <TERMINAL_ID>  Expected native runtime ID returned by classic.list
+
+Options:
+      --json         JSON output even in a terminal
+      --text <TEXT>  Literal text. No implicit Enter and no command completion/wait semantics [default: ""]
+      --key <KEYS>   Native classic key names (for example --key enter)
+  -h, --help         Print help
 ```
 
 ## hc connect
@@ -347,6 +418,7 @@ Arguments:
   [TARGET]  How ssh reaches it: `vps`, `can@10.0.0.7`, `can@10.0.0.7:2222`, a Host from ~/.ssh/config
 
 Options:
+      --backend <BACKEND>  Remote protocol. Classic requires an explicit --session and never installs Core [default: modern] [possible values: modern, classic]
       --json               JSON output even in a terminal
       --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name
       --temp               Mark it short-lived (a sandbox for a task), so clients can show it apart from machines that stay. hc treats it like any other; remove it with `hc machine rm`

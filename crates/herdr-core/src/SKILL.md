@@ -194,6 +194,37 @@ text rewriting needed: only the edit travels.
 Remote paths start at that machine's home unless you set `--cwd`; local
 paths start at your current folder. Prefer explicit paths for remote work.
 
+## Classic hosts (explicit opt-in)
+
+Requires a local build with `--features classic-backend` (disabled by default).
+The normal server build keeps the modern backend; build the classic-enabled
+client separately. `hello.features` includes `classic_control` only when enabled.
+Without it, classic calls return `backend_disabled`; saved profiles are retained.
+Keep Core locally; connect to an existing classic 0.9.5 named session without
+installing Core there:
+
+```sh
+hc machine add vps --name native --backend classic --session work
+hc classic list native
+hc classic read native w1:p1 term_RETURNED_BY_LIST --lines 100
+hc classic send native w1:p1 term_RETURNED_BY_LIST --text 'printf hello' --key enter
+```
+
+Use the exact opaque pane/runtime IDs returned by `classic list`; the example
+runtime ID is a placeholder. This is a separate control API, not `native/t7`.
+`hc ls` does not include classic panes as Core terminals. Machine state is
+`on_demand`, not a claim of a persistent connection. Discovery never focuses.
+Read returns native recent text JSON, not raw terminal bytes. Send returns the
+native input acknowledgement, not command success; Enter is explicit.
+
+Only discovery/read/input are supported. Attach, surfaces/graphics, resize,
+run/wait/recovery, creation, files, and `machine update` are unsupported; no
+remote install/upgrade fallback. No classic inferred agent status is exposed.
+The pane/runtime preflight detects observed stale IDs but is not atomic boot
+fencing: do not automate input across concurrent native pane replacement.
+`classic_outcome_unknown` means input may have happened; inspect before retrying.
+See `docs/classic-backend.md` for limits and the tested support matrix.
+
 ## Status, recovery, and cleanup
 
 - State is `live` or `finished`. Status comes from the program's OSC 7501

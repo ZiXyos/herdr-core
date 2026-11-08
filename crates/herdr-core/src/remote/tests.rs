@@ -34,6 +34,7 @@ async fn automatic_input_survives_relays_but_not_a_capability_downgrade() {
         paths.create_dirs().unwrap();
         let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
         let machine = Machine {
+            backend: Default::default(),
             name: "away".into(),
             target: "away".into(),
             via: false,
@@ -147,6 +148,7 @@ async fn failed_reattach_drains_pending_data_before_close() {
     paths.create_dirs().unwrap();
     let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
     let machine = Machine {
+        backend: Default::default(),
         name: "away".into(),
         target: "away".into(),
         via: false,
@@ -219,6 +221,7 @@ fn remote_misses_and_renames_keep_subscribers_on_the_current_machine() {
     paths.create_dirs().unwrap();
     let core = Core::start(paths, crate::api::CoreInfo { id: "here".into(), name: "here".into() }).unwrap();
     let machine = Machine {
+        backend: Default::default(),
         name: "rohan".into(),
         target: "rohan".into(),
         via: false,

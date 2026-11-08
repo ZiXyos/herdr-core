@@ -9,8 +9,19 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// Wire protocol selected explicitly when registering a machine.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    #[default]
+    Modern,
+    Classic,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct Machine {
+    #[serde(default)]
+    pub backend: Backend,
     /// What this core calls it: `rohan` in `rohan/t7`.
     pub name: String,
     /// How it is reached: an ssh target, or (`via`) a command.
@@ -23,11 +34,11 @@ pub struct Machine {
     /// machines that stay. hc treats it like any other.
     #[serde(default)]
     pub temporary: bool,
-    /// The hc session there (null: its default).
+    /// The remote session (null: modern default; classic always requires a name).
     pub session: Option<String>,
-    /// The other core's permanent id.
+    /// The other core's permanent id. Empty for classic: it has no Core identity.
     pub id: String,
-    /// What that core calls itself (its hostname).
+    /// What that core calls itself (its hostname); SSH target for classic.
     pub host: String,
     /// Its hc version when last seen.
     pub version: String,
@@ -56,7 +67,7 @@ impl Reach<'_> {
     }
 
     /// The command that runs `line` there.
-    fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
+    pub(crate) fn command(&self, paths: &crate::paths::Paths, extra: &[&str], line: &str) -> std::process::Command {
         if self.via {
             let mut cmd = std::process::Command::new("sh");
             cmd.arg("-c").arg(format!("{} \"$1\"", self.target)).arg("sh").arg(line);
