@@ -778,9 +778,9 @@ pub struct ClassicReadParams {
     pub pane_id: String,
     /// Expected native runtime ID; reject an observed pane/runtime mismatch.
     pub terminal_id: String,
+    /// Recent native text lines to request (1..1000).
     #[arg(long, default_value_t = 100)]
     #[serde(default = "classic_lines")]
-    /// Recent native text lines to request (1..1000).
     pub lines: u32,
 }
 
@@ -797,11 +797,11 @@ pub struct ClassicSendParams {
     pub pane_id: String,
     /// Expected native runtime ID returned by classic.list.
     pub terminal_id: String,
-    /// Literal text. No implicit Enter and no command completion/wait semantics.
+    /// Literal text. No implicit Enter and no command completion/wait semantics. Needs --text, --key or both.
     #[arg(long, default_value = "")]
     #[serde(default)]
     pub text: String,
-    /// Native classic key names (for example --key enter).
+    /// Native classic key names (for example --key enter); repeatable.
     #[arg(long = "key")]
     #[serde(default)]
     pub keys: Vec<String>,

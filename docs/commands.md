@@ -152,8 +152,8 @@ Arguments:
 
 Options:
       --json         JSON output even in a terminal
-      --text <TEXT>  Literal text. No implicit Enter and no command completion/wait semantics [default: ""]
-      --key <KEYS>   Native classic key names (for example --key enter)
+      --text <TEXT>  Literal text. No implicit Enter and no command completion/wait semantics. Needs --text, --key or both [default: ""]
+      --key <KEYS>   Native classic key names (for example --key enter); repeatable
   -h, --help         Print help
 ```
 

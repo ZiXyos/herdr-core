@@ -38,7 +38,7 @@ pub struct Machine {
     pub session: Option<String>,
     /// The other core's permanent id. Empty for classic: it has no Core identity.
     pub id: String,
-    /// What that core calls itself (its hostname); SSH target for classic.
+    /// What that core calls itself (its hostname). For classic, the target or command as given.
     pub host: String,
     /// Its hc version when last seen.
     pub version: String,

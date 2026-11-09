@@ -13,17 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &[
-    "framed",
-    "attach",
-    "events",
-    "status",
-    "shell",
-    "resize_notifications",
-    "automatic_input",
-    #[cfg(feature = "classic-backend")]
-    "classic_control",
-];
+pub const FEATURES: &[&str] =
+    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input", "classic_control"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -141,23 +132,23 @@ methods! { Ctx<'_>;
         "Snapshot of matching terminals, then every fact change in order (created, lost, restarted, keep, finished, removed, status, turn, title, labels, size, doc) as `event` notifications, `heartbeat` every 15 s, and `missed` + fresh snapshot for a subscriber that fell behind.",
         errors ["not_found", "machine_unknown"];
     "classic.list" => classic_list, MachineParams => crate::classic::Inventory,
-        "Discover native classic pane/runtime and workspace/tab associations; no focus or agent-status inference.",
-        errors ["machine_unknown", "backend_disabled", "unsupported_backend_capability", "classic_protocol", "classic_transport", "classic_remote"];
+        "The panes of a classic Herdr session, with their runtime, workspace and tab ids. Looks only; never focuses, and reports no agent status.",
+        errors ["machine_unknown", "unsupported_backend_capability", "classic_protocol", "classic_transport", "classic_remote"];
     "classic.read" => classic_read, ClassicReadParams => crate::classic::ReadResult,
-        "Read bounded recent native text after checking the observed pane/runtime association. Not a raw terminal stream.",
-        errors ["machine_unknown", "backend_disabled", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote"];
+        "Recent text of a classic pane, after checking that the pane still runs the runtime you saw. Text, not a raw terminal stream.",
+        errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote"];
     "classic.send" => classic_send, ClassicSendParams => crate::classic::SendResult,
-        "Explicit native text/key input. No implicit Enter, focus, retry or wait. Identity preflight is not atomic boot fencing.",
-        errors ["machine_unknown", "backend_disabled", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote", "classic_outcome_unknown"];
+        "Type text and/or keys into a classic pane. No implicit Enter, focus, retry or wait. The pane/runtime check is not atomic: a pane replaced in between still gets the input.",
+        errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote", "classic_outcome_unknown"];
     "machine.add" => machine_add, MachineAddParams => crate::machines::Machine,
-        "Register a machine using the explicit backend (default modern). Classic requires a named session and probes only its native API; never installs Core.",
-        errors ["invalid_params", "backend_disabled", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible", "unsupported_backend_capability", "classic_transport", "classic_protocol", "classic_remote"];
+        "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name. With --backend classic, check that the named classic Herdr session answers instead; nothing is installed.",
+        errors ["invalid_params", "name_taken", "already_added", "unreachable", "hc_missing", "incompatible", "unsupported_backend_capability", "classic_transport", "classic_protocol", "classic_remote"];
     "machine.list" => machine_list, Empty => MachineListResult,
         "The machines this core has added.",
         errors [];
     "machine.connect" => machine_connect, MachineParams => crate::remote::MachineView,
-        "Dial a modern machine now, or probe an on-demand classic endpoint; report its profile and transport policy.",
-        errors ["machine_unknown", "backend_disabled", "classic_transport", "classic_protocol", "classic_remote"];
+        "Dial a machine now instead of at its next retry (after a login), and report its line. A classic machine is probed once instead.",
+        errors ["machine_unknown", "classic_transport", "classic_protocol", "classic_remote"];
     "machine.rename" => machine_rename, MachineRenameParams => crate::machines::Machine,
         "Give a machine a new name here. Only this core's name for it changes.",
         errors ["invalid_params", "name_taken", "machine_unknown"];
