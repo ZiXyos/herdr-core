@@ -496,7 +496,7 @@
             "default": "modern"
           },
           "host": {
-            "description": "What that core calls itself (its hostname); SSH target for classic.",
+            "description": "What that core calls itself (its hostname). For classic, the target or command as given.",
             "type": "string"
           },
           "id": {
@@ -564,7 +564,7 @@
             "default": "modern"
           },
           "host": {
-            "description": "What that core calls itself (its hostname); SSH target for classic.",
+            "description": "What that core calls itself (its hostname). For classic, the target or command as given.",
             "type": "string"
           },
           "id": {
@@ -3671,7 +3671,7 @@
       }
     },
     {
-      "description": "Discover native classic pane/runtime and workspace/tab associations; no focus or agent-status inference.",
+      "description": "The panes of a classic Herdr session, with their runtime, workspace and tab ids. Looks only; never focuses, and reports no agent status.",
       "errors": [
         {
           "code": -32000,
@@ -3679,13 +3679,6 @@
             "kind": "machine_unknown"
           },
           "message": "machine_unknown"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "backend_disabled"
-          },
-          "message": "backend_disabled"
         },
         {
           "code": -32000,
@@ -3737,7 +3730,7 @@
       }
     },
     {
-      "description": "Read bounded recent native text after checking the observed pane/runtime association. Not a raw terminal stream.",
+      "description": "Recent text of a classic pane, after checking that the pane still runs the runtime you saw. Text, not a raw terminal stream.",
       "errors": [
         {
           "code": -32000,
@@ -3745,13 +3738,6 @@
             "kind": "machine_unknown"
           },
           "message": "machine_unknown"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "backend_disabled"
-          },
-          "message": "backend_disabled"
         },
         {
           "code": -32602,
@@ -3847,7 +3833,128 @@
       }
     },
     {
-      "description": "Explicit native text/key input. No implicit Enter, focus, retry or wait. Identity preflight is not atomic boot fencing.",
+      "description": "Type text and/or keys into a classic pane. No implicit Enter, focus, retry or wait. The pane/runtime check is not atomic: a pane replaced in between still gets the input.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_outcome_unknown"
+          },
+          "message": "classic_outcome_unknown"
+        }
+      ],
+      "name": "classic.send",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Native classic key names (for example --key enter); repeatable.",
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Native classic key names (for example --key enter); repeatable.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID returned by classic.list.",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID returned by classic.list.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Literal text. No implicit Enter and no command completion/wait semantics. Needs --text, --key or both.",
+          "name": "text",
+          "required": false,
+          "schema": {
+            "default": "",
+            "description": "Literal text. No implicit Enter and no command completion/wait semantics. Needs --text, --key or both.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SendResult2"
+        }
+      }
+    },
+    {
+      "description": "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name. With --backend classic, check that the named classic Herdr session answers instead; nothing is installed.",
       "errors": [
         {
           "code": -32000,
@@ -4148,7 +4255,7 @@
       }
     },
     {
-      "description": "Dial a modern machine now, or probe an on-demand classic endpoint; report its profile and transport policy.",
+      "description": "Dial a machine now instead of at its next retry (after a login), and report its line. A classic machine is probed once instead.",
       "errors": [
         {
           "code": -32000,
@@ -4156,13 +4263,6 @@
             "kind": "machine_unknown"
           },
           "message": "machine_unknown"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "backend_disabled"
-          },
-          "message": "backend_disabled"
         },
         {
           "code": -32000,

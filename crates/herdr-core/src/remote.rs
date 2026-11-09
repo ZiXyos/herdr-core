@@ -209,12 +209,7 @@ pub struct MachineView {
 
 pub fn view(st: &State, m: &Machine) -> MachineView {
     if m.backend == crate::machines::Backend::Classic {
-        return MachineView {
-            machine: m.clone(),
-            state: if crate::classic::ENABLED { "on_demand" } else { "backend_disabled" }.into(),
-            since_ms: None,
-            why: None,
-        };
+        return MachineView { machine: m.clone(), state: "on_demand".into(), since_ms: None, why: None };
     }
     let (state, since_ms, why) = match st.lines.get(&m.id) {
         None | Some(LineState::Connecting) => ("connecting", None, None),
