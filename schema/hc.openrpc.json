@@ -1542,7 +1542,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.18"
+    "version": "0.1.19"
   },
   "methods": [
     {
@@ -2491,7 +2491,7 @@
       }
     },
     {
-      "description": "Paste text and press Enter, once nobody has typed for ~3 s; keys a person presses meanwhile are held, then delivered. Refuses a blocked program unless `force`.",
+      "description": "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
       "errors": [
         {
           "code": -32000,
@@ -2756,7 +2756,7 @@
       }
     },
     {
-      "description": "Press named keys, encoded for the program's current keyboard modes. Same quiet rule as send.",
+      "description": "Press named keys, encoded for the program's current keyboard modes, after ~3 s of quiet. Does not wait for an unsent draft.",
       "errors": [
         {
           "code": -32000,
@@ -3957,11 +3957,146 @@
       "description": "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name. With --backend classic, check that the named classic Herdr session answers instead; nothing is installed.",
       "errors": [
         {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
+        },
+        {
           "code": -32602,
           "data": {
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_outcome_unknown"
+          },
+          "message": "classic_outcome_unknown"
+        }
+      ],
+      "name": "classic.send",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Native classic key names (for example --key enter).",
+          "name": "keys",
+          "required": false,
+          "schema": {
+            "default": [],
+            "description": "Native classic key names (for example --key enter).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID returned by classic.list.",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID returned by classic.list.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
+          "name": "text",
+          "required": false,
+          "schema": {
+            "default": "",
+            "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SendResult2"
+        }
+      }
+    },
+    {
+      "description": "Register a machine using the explicit backend (default modern). Classic requires a named session and probes only its native API; never installs Core.",
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "backend_disabled"
+          },
+          "message": "backend_disabled"
         },
         {
           "code": -32000,

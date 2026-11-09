@@ -1,6 +1,6 @@
 [package]
 name = "herdr-core"
-version = "0.1.18"
+version = "0.1.19"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -8,6 +8,11 @@ publish.workspace = true
 [[bin]]
 name = "herdr-core"
 path = "src/main.rs"
+
+[features]
+default = []
+# Native classic 0.9.5 JSON control adapter. Never needed on modern remote servers.
+classic-backend = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

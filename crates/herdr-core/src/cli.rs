@@ -47,7 +47,7 @@ enum Cmd {
     Label(LabelParams),
     /// Keep a live terminal after loss (--off disables).
     Keep(crate::api::KeepParams),
-    /// Paste text into a terminal and press Enter (waits for a person to pause).
+    /// Paste text into a terminal and press Enter (waits for a person's unfinished draft).
     Send(SendParams),
     /// Wait for your children (--children any) or one terminal; a message to you also ends it.
     Wait(WaitParams),
@@ -790,6 +790,7 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
 /// Stops the core and returns once it has exited (its connection closes).
 fn stop(paths: &Paths) -> Result<Out, RpcError> {
     let Some(stream) = client::connect_existing(paths) else {
+        crate::restart::discard_if_stopped(paths);
         return Ok(Out { json: json!({"stopped": false}), human: "no core running".into() });
     };
     let r = client::call(&stream, "server.stop", json!({}))?;
