@@ -44,6 +44,13 @@
         ],
         "type": "string"
       },
+      "ClassicSplitDirection": {
+        "enum": [
+          "right",
+          "down"
+        ],
+        "type": "string"
+      },
       "CoreInfo": {
         "properties": {
           "id": {
@@ -58,6 +65,30 @@
         "required": [
           "id",
           "name"
+        ],
+        "type": "object"
+      },
+      "Correlation": {
+        "enum": [
+          "recorded",
+          "unavailable",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "CreateResult": {
+        "properties": {
+          "correlation": {
+            "$ref": "#/components/schemas/Correlation",
+            "description": "Whether native correlation metadata was acknowledged. Pane creation is confirmed in all cases."
+          },
+          "pane": {
+            "$ref": "#/components/schemas/Pane"
+          }
+        },
+        "required": [
+          "pane",
+          "correlation"
         ],
         "type": "object"
       },
@@ -409,6 +440,17 @@
         ],
         "type": "object"
       },
+      "InspectResult": {
+        "properties": {
+          "process_info": {
+            "$ref": "#/components/schemas/ProcessInfo"
+          }
+        },
+        "required": [
+          "process_info"
+        ],
+        "type": "object"
+      },
       "InterruptResult": {
         "properties": {
           "key": {
@@ -632,6 +674,12 @@
       },
       "Pane": {
         "properties": {
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "pane_id": {
             "type": "string"
           },
@@ -640,6 +688,13 @@
           },
           "terminal_id": {
             "type": "string"
+          },
+          "tokens": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Opaque native metadata, including optional client launch correlation.",
+            "type": "object"
           },
           "workspace_id": {
             "type": "string"
@@ -650,6 +705,90 @@
           "terminal_id",
           "workspace_id",
           "tab_id"
+        ],
+        "type": "object"
+      },
+      "Process": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "argv0": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cmdline": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "name"
+        ],
+        "type": "object"
+      },
+      "ProcessInfo": {
+        "properties": {
+          "foreground_process_group_id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "foreground_processes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Process"
+            },
+            "type": "array"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "shell_pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tty": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pane_id"
         ],
         "type": "object"
       },
@@ -1018,6 +1157,23 @@
         },
         "required": [
           "accepted"
+        ],
+        "type": "object"
+      },
+      "StartResult": {
+        "properties": {
+          "accepted": {
+            "description": "Classic accepted input; not a claim that the requested process executed.",
+            "type": "boolean"
+          },
+          "prestart": {
+            "$ref": "#/components/schemas/ProcessInfo",
+            "description": "Authoritative foreground identity observed immediately before input was sent."
+          }
+        },
+        "required": [
+          "accepted",
+          "prestart"
         ],
         "type": "object"
       },
@@ -3730,6 +3886,407 @@
       }
     },
     {
+      "description": "Split a native classic pane without focusing it. Preserves the returned pane/runtime identity and records best-effort launch correlation metadata; never applies layout.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_outcome_unknown"
+          },
+          "message": "classic_outcome_unknown"
+        }
+      ],
+      "name": "classic.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Lowercase SHA-256 digest of the immutable launch configuration.",
+          "name": "configuration_hash",
+          "required": true,
+          "schema": {
+            "description": "Lowercase SHA-256 digest of the immutable launch configuration.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Initial native working directory (optional): absolute, no control characters.\nThe host resolves symlinks; the returned pane `cwd` is the observed path.",
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "description": "Initial native working directory (optional): absolute, no control characters.\nThe host resolves symlinks; the returned pane `cwd` is the observed path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Native split direction. Creation never focuses the new pane.",
+          "name": "direction",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ClassicSplitDirection",
+            "description": "Native split direction. Creation never focuses the new pane."
+          }
+        },
+        {
+          "description": "Initial native shell environment, KEY=VALUE (repeatable); values without\ncontrol characters.",
+          "name": "env",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Initial native shell environment, KEY=VALUE (repeatable); values without\ncontrol characters.",
+            "type": "object"
+          }
+        },
+        {
+          "description": "Client-generated correlation ID; no native idempotency is implied.",
+          "name": "launch_id",
+          "required": true,
+          "schema": {
+            "description": "Client-generated correlation ID; no native idempotency is implied.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Existing native pane to split; its runtime must still match terminal_id.",
+          "name": "target_pane_id",
+          "required": true,
+          "schema": {
+            "description": "Existing native pane to split; its runtime must still match terminal_id.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected runtime of the target pane, returned by classic.list.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected runtime of the target pane, returned by classic.list.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CreateResult"
+        }
+      }
+    },
+    {
+      "description": "Require an observed interactive POSIX shell, then serialize exact argv/env/cwd and send Enter. Returns prestart identity; acknowledged input is not process-start proof. Readiness and send are not atomic.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_shell_not_ready"
+          },
+          "message": "classic_shell_not_ready"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_outcome_unknown"
+          },
+          "message": "classic_outcome_unknown"
+        }
+      ],
+      "name": "classic.start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Program and exact arguments. This is process configuration, not arbitrary text input:\nit is typed into the pane's shell, so control characters (tab, newline, DEL,\nother C0/C1) are rejected before any request.",
+          "name": "argv",
+          "required": true,
+          "schema": {
+            "description": "Program and exact arguments. This is process configuration, not arbitrary text input:\nit is typed into the pane's shell, so control characters (tab, newline, DEL,\nother C0/C1) are rejected before any request.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The same lowercase SHA-256 configuration digest used for creation.",
+          "name": "configuration_hash",
+          "required": true,
+          "schema": {
+            "description": "The same lowercase SHA-256 configuration digest used for creation.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Working directory for the command (optional): absolute, no control characters.",
+          "name": "cwd",
+          "required": false,
+          "schema": {
+            "description": "Working directory for the command (optional): absolute, no control characters.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "description": "Extra process environment, KEY=VALUE (repeatable); values without control characters.",
+          "name": "env",
+          "required": false,
+          "schema": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Extra process environment, KEY=VALUE (repeatable); values without control characters.",
+            "type": "object"
+          }
+        },
+        {
+          "description": "The same correlation ID used for native pane creation.",
+          "name": "launch_id",
+          "required": true,
+          "schema": {
+            "description": "The same correlation ID used for native pane creation.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID returned by classic.create/list.",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID returned by classic.create/list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID; an observed replacement is refused before input (not atomic).",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID; an observed replacement is refused before input (not atomic).",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StartResult"
+        }
+      }
+    },
+    {
+      "description": "Read native foreground process evidence after checking the pane/runtime association. Used to reconcile launch; no status inference.",
+      "errors": [
+        {
+          "code": -32000,
+          "data": {
+            "kind": "machine_unknown"
+          },
+          "message": "machine_unknown"
+        },
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unsupported_backend_capability"
+          },
+          "message": "unsupported_backend_capability"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_stale_identity"
+          },
+          "message": "classic_stale_identity"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_protocol"
+          },
+          "message": "classic_protocol"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_transport"
+          },
+          "message": "classic_transport"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "classic_remote"
+          },
+          "message": "classic_remote"
+        }
+      ],
+      "name": "classic.inspect",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The registered classic machine name.",
+          "name": "machine",
+          "required": true,
+          "schema": {
+            "description": "The registered classic machine name.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Opaque native pane ID returned by classic.list.",
+          "name": "pane_id",
+          "required": true,
+          "schema": {
+            "description": "Opaque native pane ID returned by classic.list.",
+            "type": "string"
+          }
+        },
+        {
+          "description": "Expected native runtime ID returned by classic.list.",
+          "name": "terminal_id",
+          "required": true,
+          "schema": {
+            "description": "Expected native runtime ID returned by classic.list.",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/InspectResult"
+        }
+      }
+    },
+    {
       "description": "Recent text of a classic pane, after checking that the pane still runs the runtime you saw. Text, not a raw terminal stream.",
       "errors": [
         {
@@ -3957,146 +4514,11 @@
       "description": "Add another machine: dial it over ssh, check that hc answers there, and keep it under a name. With --backend classic, check that the named classic Herdr session answers instead; nothing is installed.",
       "errors": [
         {
-          "code": -32000,
-          "data": {
-            "kind": "machine_unknown"
-          },
-          "message": "machine_unknown"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "backend_disabled"
-          },
-          "message": "backend_disabled"
-        },
-        {
           "code": -32602,
           "data": {
             "kind": "invalid_params"
           },
           "message": "invalid_params"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "unsupported_backend_capability"
-          },
-          "message": "unsupported_backend_capability"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "classic_stale_identity"
-          },
-          "message": "classic_stale_identity"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "classic_protocol"
-          },
-          "message": "classic_protocol"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "classic_transport"
-          },
-          "message": "classic_transport"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "classic_remote"
-          },
-          "message": "classic_remote"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "classic_outcome_unknown"
-          },
-          "message": "classic_outcome_unknown"
-        }
-      ],
-      "name": "classic.send",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "description": "Native classic key names (for example --key enter).",
-          "name": "keys",
-          "required": false,
-          "schema": {
-            "default": [],
-            "description": "Native classic key names (for example --key enter).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        {
-          "description": "The registered classic machine name.",
-          "name": "machine",
-          "required": true,
-          "schema": {
-            "description": "The registered classic machine name.",
-            "type": "string"
-          }
-        },
-        {
-          "description": "Opaque native pane ID returned by classic.list.",
-          "name": "pane_id",
-          "required": true,
-          "schema": {
-            "description": "Opaque native pane ID returned by classic.list.",
-            "type": "string"
-          }
-        },
-        {
-          "description": "Expected native runtime ID returned by classic.list.",
-          "name": "terminal_id",
-          "required": true,
-          "schema": {
-            "description": "Expected native runtime ID returned by classic.list.",
-            "type": "string"
-          }
-        },
-        {
-          "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
-          "name": "text",
-          "required": false,
-          "schema": {
-            "default": "",
-            "description": "Literal text. No implicit Enter and no command completion/wait semantics.",
-            "type": "string"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/SendResult2"
-        }
-      }
-    },
-    {
-      "description": "Register a machine using the explicit backend (default modern). Classic requires a named session and probes only its native API; never installs Core.",
-      "errors": [
-        {
-          "code": -32602,
-          "data": {
-            "kind": "invalid_params"
-          },
-          "message": "invalid_params"
-        },
-        {
-          "code": -32000,
-          "data": {
-            "kind": "backend_disabled"
-          },
-          "message": "backend_disabled"
         },
         {
           "code": -32000,

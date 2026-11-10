@@ -769,6 +769,84 @@ pub struct MachineParams {
     pub machine: String,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassicSplitDirection {
+    Right,
+    Down,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClassicCreateParams {
+    /// The registered classic machine name.
+    pub machine: String,
+    /// Existing native pane to split; its runtime must still match terminal_id.
+    pub target_pane_id: String,
+    /// Expected runtime of the target pane, returned by classic.list.
+    pub terminal_id: String,
+    /// Native split direction. Creation never focuses the new pane.
+    #[arg(long, value_enum, default_value = "down")]
+    pub direction: ClassicSplitDirection,
+    /// Initial native working directory (optional): absolute, no control characters.
+    /// The host resolves symlinks; the returned pane `cwd` is the observed path.
+    #[arg(long)]
+    pub cwd: Option<String>,
+    /// Initial native shell environment, KEY=VALUE (repeatable); values without
+    /// control characters.
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    #[serde(default, with = "label_map")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub env: Vec<Label>,
+    /// Client-generated correlation ID; no native idempotency is implied.
+    #[arg(long)]
+    pub launch_id: String,
+    /// Lowercase SHA-256 digest of the immutable launch configuration.
+    #[arg(long)]
+    pub configuration_hash: String,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClassicStartParams {
+    /// The registered classic machine name.
+    pub machine: String,
+    /// Opaque native pane ID returned by classic.create/list.
+    pub pane_id: String,
+    /// Expected native runtime ID; an observed replacement is refused before input (not atomic).
+    pub terminal_id: String,
+    /// Program and exact arguments. This is process configuration, not arbitrary text input:
+    /// it is typed into the pane's shell, so control characters (tab, newline, DEL,
+    /// other C0/C1) are rejected before any request.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    pub argv: Vec<String>,
+    /// Working directory for the command (optional): absolute, no control characters.
+    #[arg(long)]
+    pub cwd: Option<String>,
+    /// Extra process environment, KEY=VALUE (repeatable); values without control characters.
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    #[serde(default, with = "label_map")]
+    #[schemars(with = "BTreeMap<String, String>")]
+    pub env: Vec<Label>,
+    /// The same correlation ID used for native pane creation.
+    #[arg(long)]
+    pub launch_id: String,
+    /// The same lowercase SHA-256 configuration digest used for creation.
+    #[arg(long)]
+    pub configuration_hash: String,
+}
+
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClassicInspectParams {
+    /// The registered classic machine name.
+    pub machine: String,
+    /// Opaque native pane ID returned by classic.list.
+    pub pane_id: String,
+    /// Expected native runtime ID returned by classic.list.
+    pub terminal_id: String,
+}
+
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClassicReadParams {

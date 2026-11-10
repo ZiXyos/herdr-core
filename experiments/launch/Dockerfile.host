@@ -1,0 +1,3 @@
+# Classic-only host plus Debian's Node.js, for the process.title rewrite fixture.
+FROM hydra-compat-classic:0.9.5
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs && rm -rf /var/lib/apt/lists/*

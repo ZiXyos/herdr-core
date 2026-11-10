@@ -134,6 +134,15 @@ methods! { Ctx<'_>;
     "classic.list" => classic_list, MachineParams => crate::classic::Inventory,
         "The panes of a classic Herdr session, with their runtime, workspace and tab ids. Looks only; never focuses, and reports no agent status.",
         errors ["machine_unknown", "unsupported_backend_capability", "classic_protocol", "classic_transport", "classic_remote"];
+    "classic.create" => classic_create, ClassicCreateParams => crate::classic::CreateResult,
+        "Split a native classic pane without focusing it. Preserves the returned pane/runtime identity and records best-effort launch correlation metadata; never applies layout.",
+        errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote", "classic_outcome_unknown"];
+    "classic.start" => classic_start, ClassicStartParams => crate::classic::StartResult,
+        "Require an observed interactive POSIX shell, then serialize exact argv/env/cwd and send Enter. Returns prestart identity; acknowledged input is not process-start proof. Readiness and send are not atomic.",
+        errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_shell_not_ready", "classic_protocol", "classic_transport", "classic_remote", "classic_outcome_unknown"];
+    "classic.inspect" => classic_inspect, ClassicInspectParams => crate::classic::InspectResult,
+        "Read native foreground process evidence after checking the pane/runtime association. Used to reconcile launch; no status inference.",
+        errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote"];
     "classic.read" => classic_read, ClassicReadParams => crate::classic::ReadResult,
         "Recent text of a classic pane, after checking that the pane still runs the runtime you saw. Text, not a raw terminal stream.",
         errors ["machine_unknown", "invalid_params", "unsupported_backend_capability", "classic_stale_identity", "classic_protocol", "classic_transport", "classic_remote"];
@@ -724,6 +733,18 @@ fn classic_machine(core: &Core, name: &str) -> Result<crate::machines::Machine, 
 
 async fn classic_list(core: Ctx<'_>, p: MachineParams) -> Result<crate::classic::Inventory, RpcError> {
     crate::classic::list(&core.paths, &classic_machine(core, &p.machine)?).await
+}
+
+async fn classic_create(core: Ctx<'_>, p: ClassicCreateParams) -> Result<crate::classic::CreateResult, RpcError> {
+    crate::classic::create(&core.paths, &classic_machine(core, &p.machine)?, &p).await
+}
+
+async fn classic_start(core: Ctx<'_>, p: ClassicStartParams) -> Result<crate::classic::StartResult, RpcError> {
+    crate::classic::start(&core.paths, &classic_machine(core, &p.machine)?, &p).await
+}
+
+async fn classic_inspect(core: Ctx<'_>, p: ClassicInspectParams) -> Result<crate::classic::InspectResult, RpcError> {
+    crate::classic::inspect(&core.paths, &classic_machine(core, &p.machine)?, &p).await
 }
 
 async fn classic_read(core: Ctx<'_>, p: ClassicReadParams) -> Result<crate::classic::ReadResult, RpcError> {
