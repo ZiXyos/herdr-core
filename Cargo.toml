@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Mobile embedding has its own lockfile and notices: hc never links it.
+exclude = ["crates/hydra-engine"]
 
 [workspace.package]
 edition = "2024"
