@@ -48,7 +48,8 @@ More
   update [--version X|--from <file>]   latest release, at least X, or a build
   machine add|ls|login|update|rename|rm   other machines, over ssh or a command
                               (--via 'fly ssh console -a x --pty=false -C')
-  classic list|read|send       native classic control (machine add --backend classic --session name)
+  classic list|read|send|create|start|inspect
+                              native classic control (machine add --backend classic --session name)
   connect                     the API over stdin/stdout (ssh box hc connect)
   schema                      the API as JSON Schema, for app builders
 
@@ -95,10 +96,59 @@ Native classic control plane; not Core terminals or raw streams
 Usage: hc classic [OPTIONS] <COMMAND>
 
 Commands:
-  list  Observe native pane/runtime and workspace/tab IDs, without focusing
-  read  Read recent native text (not a stream)
-  send  Send explicit native text/keys, with no retry or implicit Enter
-  help  Print this message or the help of the given subcommand(s)
+  list     Observe native pane/runtime and workspace/tab IDs, without focusing
+  create   Create a native split without focusing it; returns its native identity
+  start    Launch exact process argv/env/cwd in a native pane (input acknowledgement only)
+  inspect  Inspect native foreground processes for launch reconciliation
+  read     Read recent native text (not a stream)
+  send     Send explicit native text/keys, with no retry or implicit Enter
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  JSON output even in a terminal
+  -h, --help  Print help
+```
+
+## hc classic create
+
+```text
+Create a native split without focusing it; returns its native identity
+
+Usage: hc classic create [OPTIONS] --launch-id <LAUNCH_ID> --configuration-hash <CONFIGURATION_HASH> <MACHINE> <TARGET_PANE_ID> <TERMINAL_ID>
+
+Arguments:
+  <MACHINE>         The registered classic machine name
+  <TARGET_PANE_ID>  Existing native pane to split; its runtime must still match terminal_id
+  <TERMINAL_ID>     Expected runtime of the target pane, returned by classic.list
+
+Options:
+      --direction <DIRECTION>
+          Native split direction. Creation never focuses the new pane [default: down] [possible values: right, down]
+      --json
+          JSON output even in a terminal
+      --cwd <CWD>
+          Initial native working directory (optional): absolute, no control characters. The host resolves symlinks; the returned pane `cwd` is the observed path
+      --env <KEY=VALUE>
+          Initial native shell environment, KEY=VALUE (repeatable); values without control characters
+      --launch-id <LAUNCH_ID>
+          Client-generated correlation ID; no native idempotency is implied
+      --configuration-hash <CONFIGURATION_HASH>
+          Lowercase SHA-256 digest of the immutable launch configuration
+  -h, --help
+          Print help
+```
+
+## hc classic inspect
+
+```text
+Inspect native foreground processes for launch reconciliation
+
+Usage: hc classic inspect [OPTIONS] <MACHINE> <PANE_ID> <TERMINAL_ID>
+
+Arguments:
+  <MACHINE>      The registered classic machine name
+  <PANE_ID>      Opaque native pane ID returned by classic.list
+  <TERMINAL_ID>  Expected native runtime ID returned by classic.list
 
 Options:
       --json  JSON output even in a terminal
@@ -155,6 +205,34 @@ Options:
       --text <TEXT>  Literal text. No implicit Enter and no command completion/wait semantics. Needs --text, --key or both [default: ""]
       --key <KEYS>   Native classic key names (for example --key enter); repeatable
   -h, --help         Print help
+```
+
+## hc classic start
+
+```text
+Launch exact process argv/env/cwd in a native pane (input acknowledgement only)
+
+Usage: hc classic start [OPTIONS] --launch-id <LAUNCH_ID> --configuration-hash <CONFIGURATION_HASH> <MACHINE> <PANE_ID> <TERMINAL_ID> <ARGV>...
+
+Arguments:
+  <MACHINE>      The registered classic machine name
+  <PANE_ID>      Opaque native pane ID returned by classic.create/list
+  <TERMINAL_ID>  Expected native runtime ID; an observed replacement is refused before input (not atomic)
+  <ARGV>...      Program and exact arguments. This is process configuration, not arbitrary text input: it is typed into the pane's shell, so control characters (tab, newline, DEL, other C0/C1) are rejected before any request
+
+Options:
+      --cwd <CWD>
+          Working directory for the command (optional): absolute, no control characters
+      --json
+          JSON output even in a terminal
+      --env <KEY=VALUE>
+          Extra process environment, KEY=VALUE (repeatable); values without control characters
+      --launch-id <LAUNCH_ID>
+          The same correlation ID used for native pane creation
+      --configuration-hash <CONFIGURATION_HASH>
+          The same lowercase SHA-256 configuration digest used for creation
+  -h, --help
+          Print help
 ```
 
 ## hc connect

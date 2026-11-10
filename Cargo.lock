@@ -161,11 +161,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "herdr-classic-control"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "herdr-core"
 version = "0.1.19"
 dependencies = [
  "clap",
  "ghostty-vt",
+ "herdr-classic-control",
  "libc",
  "schemars",
  "serde",
