@@ -742,6 +742,7 @@ name = "hydra-engine"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "getrandom 0.4.3",
  "herdr-classic",
  "herdr-classic-control",
  "jni",

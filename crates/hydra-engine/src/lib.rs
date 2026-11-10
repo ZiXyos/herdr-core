@@ -2,6 +2,7 @@
 //! This crate deliberately excludes desktop PTY, subprocess, server and Ghostty code.
 
 mod ffi;
+mod keys;
 mod ssh;
 mod terminal;
 
@@ -262,6 +263,14 @@ impl Engine {
 
     async fn execute_inner(&self, method: String, params: Value) -> Result<Value, EngineError> {
         match method.as_str() {
+            "generateKey" => {
+                let p: GenerateKeyParams = parse(params)?;
+                keys::generate(&p.comment)
+            }
+            "publicKey" => {
+                let p: PublicKeyParams = parse(params)?;
+                keys::public_line(zeroize::Zeroizing::new(p.private_key), &p.comment)
+            }
             "connect" => {
                 let config: ConnectionConfig = parse(params)?;
                 let id = self.id("ssh-");
@@ -698,6 +707,21 @@ struct TerminalFocusParams {
 
 fn channel_not_found(hint: &str) -> EngineError {
     EngineError::new("channel_not_found", "Unknown or closed byte channel", hint)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateKeyParams {
+    #[serde(default)]
+    comment: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicKeyParams {
+    private_key: String,
+    #[serde(default)]
+    comment: String,
 }
 
 #[derive(Deserialize)]

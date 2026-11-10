@@ -13,6 +13,8 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]
 base64 = "0.22"
+# Already in the tree through russh; named here for the OS random source used by key generation.
+getrandom = { version = "0.4", features = ["sys_rng"] }
 herdr-classic = { path = "../herdr-classic" }
 herdr-classic-control = { path = "../herdr-classic-control" }
 russh = { version = "=0.62.0", default-features = false, features = ["ring"] }
