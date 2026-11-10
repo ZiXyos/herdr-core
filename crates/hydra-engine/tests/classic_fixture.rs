@@ -376,3 +376,59 @@ async fn launch_and_decoded_terminal_share_one_embedded_session() {
     let _ = ctrl_c;
     call(&engine, "d", "disconnect", json!({"sessionId":id})).await.unwrap();
 }
+
+/// Needs `scripts/classic-ssh-fixture.sh bridge` (a fake bridge registered for pane w1:p1).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the loopback classic fixture with its fake bridge (classic-ssh-fixture.sh bridge)"]
+async fn bridge_is_discovered_authenticated_and_carries_ordered_frames() {
+    let f = fixture();
+    let engine = Engine::new();
+    let info = call(&engine, "1", "connect", connect_params(&f, Some(&f.fingerprint))).await.unwrap();
+    assert!(info["capabilities"].as_array().unwrap().contains(&json!("harness.bridge")));
+    let session = info["sessionId"].as_str().unwrap();
+    drain(&engine).await;
+
+    let listed = call(&engine, "2", "bridgeList", json!({"sessionId":session})).await.unwrap();
+    let bridge = listed["bridges"].as_array().unwrap().iter().find(|b| b["paneId"] == "w1:p1").expect("fake bridge");
+    assert_eq!(bridge["instanceId"], "fake-instance");
+    assert_eq!(bridge["target"]["conversationId"], "fake-conversation");
+    assert!(!listed.to_string().contains("fixture-token"), "the token stays in the engine");
+    assert!(!listed.to_string().contains("bridge.sock"));
+
+    let stale = json!({"sessionId":session,"bridgeId":"b0","paneId":"w1:p1","instanceId":"older-instance"});
+    assert_eq!(call(&engine, "3", "bridgeOpen", stale).await.unwrap_err()["kind"], "bridge_unavailable");
+
+    let open = json!({"sessionId":session,"bridgeId":"b1","paneId":"w1:p1","instanceId":"fake-instance"});
+    let opened = call(&engine, "4", "bridgeOpen", open.clone()).await.unwrap();
+    assert_eq!(opened["bridge"]["actorId"], "fixture-host");
+    assert_eq!(call(&engine, "5", "bridgeOpen", open).await.unwrap_err()["kind"], "invalid_params");
+
+    for (index, id) in ["r1", "r2"].iter().enumerate() {
+        let line = json!({"protocol":"hydra.bridge","version":1,"requestId":id,"method":"hydra.hello","params":{}})
+            .to_string();
+        let sent =
+            call(&engine, &format!("s{index}"), "bridgeSend", json!({"bridgeId":"b1","line":line})).await.unwrap();
+        assert_eq!(sent["accepted"], true);
+    }
+    let mut frames = Vec::new();
+    while frames.len() < 4 {
+        let event = next_event(&engine, Duration::from_secs(10)).await;
+        assert_eq!(event["kind"], "bridge", "{event}");
+        assert_eq!((event["bridgeId"].as_str(), event["type"].as_str()), (Some("b1"), Some("frame")));
+        frames.push(serde_json::from_str::<Value>(event["frame"].as_str().unwrap()).unwrap());
+    }
+    assert_eq!(frames[0], json!({"requestId":"r1","ok":true,"result":{"echo":"hydra.hello"}}));
+    assert_eq!(frames[1]["event"]["after"], "r1");
+    assert_eq!(frames[2]["requestId"], "r2");
+    assert_eq!(frames[3]["type"], "hydra.event");
+
+    let multiline = call(&engine, "6", "bridgeSend", json!({"bridgeId":"b1","line":"{}\n{}"})).await.unwrap_err();
+    assert_eq!(multiline["kind"], "invalid_params");
+
+    call(&engine, "7", "bridgeClose", json!({"bridgeId":"b1"})).await.unwrap();
+    let closed = next_event(&engine, Duration::from_secs(5)).await;
+    assert_eq!((closed["type"].as_str(), closed["reason"].as_str()), (Some("closed"), Some("closed")));
+    let gone = call(&engine, "8", "bridgeSend", json!({"bridgeId":"b1","line":"{}"})).await.unwrap_err();
+    assert_eq!(gone["kind"], "bridge_not_found");
+    engine.shutdown().await;
+}

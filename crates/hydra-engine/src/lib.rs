@@ -1,6 +1,7 @@
 //! Embedded mobile engine: authenticated SSH plus the shared classic control client.
 //! This crate deliberately excludes desktop PTY, subprocess, server and Ghostty code.
 
+mod bridge;
 mod ffi;
 mod keys;
 mod ssh;
@@ -32,6 +33,7 @@ pub const CAPABILITIES: &[&str] = &[
     "classic.inspect",
     "channel.stable",
     "terminal.stable",
+    "harness.bridge",
 ];
 
 /// Methods whose in-flight cancellation or shutdown leaves the remote effect unknown.
@@ -172,6 +174,7 @@ pub struct Engine {
     sessions: Mutex<HashMap<String, Session>>,
     channels: Mutex<HashMap<String, ByteChannel>>,
     terminals: Mutex<HashMap<String, terminal::Terminal>>,
+    bridges: Mutex<HashMap<String, bridge::Bridge>>,
     requests: StdMutex<Requests>,
     events: Events,
     event_receiver: Mutex<EventReceiver>,
@@ -186,6 +189,7 @@ impl Engine {
             sessions: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
+            bridges: Mutex::new(HashMap::new()),
             requests: StdMutex::new(Requests::default()),
             events: Events { sender, dropped: Arc::new(AtomicU64::new(0)) },
             event_receiver: Mutex::new(receiver),
@@ -394,6 +398,76 @@ impl Engine {
                 terminal.stop.cancel();
                 Ok(json!({"closed":true}))
             }
+            "bridgeList" => {
+                let p: SessionParams = parse(params)?;
+                let (transport, session) = self.session(&p.session_id).await?;
+                let bridges: Vec<Value> =
+                    bridge::registry(&transport, &session).await?.iter().map(bridge::Registration::public).collect();
+                Ok(json!({"bridges":bridges}))
+            }
+            "bridgeOpen" => {
+                let p: BridgeOpenParams = parse(params)?;
+                // Client-chosen id: frames may arrive before this call returns.
+                let valid = (1..=64).contains(&p.bridge_id.len())
+                    && p.bridge_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+                if !valid || self.bridges.lock().await.contains_key(&p.bridge_id) {
+                    return Err(EngineError::new(
+                        "invalid_params",
+                        "Bridge id must be a new 1..64 character [A-Za-z0-9_-] id",
+                        "choose a unique bridge id",
+                    ));
+                }
+                let (transport, session) = self.session(&p.session_id).await?;
+                // Re-read the registry: the instance the caller listed must still be the live one.
+                let registration = bridge::registry(&transport, &session)
+                    .await?
+                    .into_iter()
+                    .find(|r| r.pane_id == p.pane_id && r.instance_id == p.instance_id)
+                    .ok_or_else(|| {
+                        EngineError::new(
+                            "bridge_unavailable",
+                            "That bridge is no longer registered for the pane",
+                            "list bridges again; the agent may have restarted or quit",
+                        )
+                    })?;
+                let public = registration.public();
+                let stop = self.shutdown.child_token();
+                let sender =
+                    bridge::open(&transport, registration, p.bridge_id.clone(), self.events.clone(), stop.clone())
+                        .await?;
+                self.bridges
+                    .lock()
+                    .await
+                    .insert(p.bridge_id.clone(), bridge::Bridge { session_id: p.session_id, sender, stop });
+                Ok(json!({"bridgeId":p.bridge_id,"bridge":public}))
+            }
+            "bridgeSend" => {
+                let p: BridgeSendParams = parse(params)?;
+                if p.line.is_empty() || p.line.len() > bridge::MAX_SEND_BYTES || p.line.contains(['\n', '\r']) {
+                    return Err(EngineError::new(
+                        "invalid_params",
+                        "A bridge frame is one line of at most 192 KiB",
+                        "send one JSON request per call",
+                    ));
+                }
+                let sender = match self.bridges.lock().await.get(&p.bridge_id) {
+                    Some(bridge) => bridge.sender.clone(),
+                    None => return Err(bridge_not_found()),
+                };
+                if sender.send(bridge::BridgeCommand::Send(p.line)).await.is_err() {
+                    self.bridges.lock().await.remove(&p.bridge_id);
+                    return Err(bridge_not_found());
+                }
+                // Queued in order on the connection; the bridge's correlated response is the outcome.
+                Ok(json!({"accepted":true}))
+            }
+            "bridgeClose" => {
+                let p: BridgeParams = parse(params)?;
+                let bridge = self.bridges.lock().await.remove(&p.bridge_id).ok_or_else(bridge_not_found)?;
+                bridge.sender.try_send(bridge::BridgeCommand::Close).ok();
+                bridge.stop.cancel();
+                Ok(json!({"closed":true}))
+            }
             "channelOpen" => {
                 let p: ChannelOpenParams = parse(params)?;
                 let ChannelKind::Stable = p.kind;
@@ -559,6 +633,13 @@ impl Engine {
             EngineError::new("session_not_found", "Unknown or disconnected session", "connect before disconnecting")
         })?;
         self.close_channels(Some(id)).await;
+        self.bridges.lock().await.retain(|_, bridge| {
+            let keep = bridge.session_id != id;
+            if !keep {
+                bridge.stop.cancel();
+            }
+            keep
+        });
         session.transport.disconnect().await;
         Ok(session)
     }
@@ -703,6 +784,36 @@ struct TerminalInputParams {
 struct TerminalFocusParams {
     terminal_id: String,
     tab_id: String,
+}
+
+fn bridge_not_found() -> EngineError {
+    EngineError::new(
+        "bridge_not_found",
+        "Unknown or closed bridge",
+        "a closed event carries the reason; open the bridge again",
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BridgeOpenParams {
+    session_id: String,
+    bridge_id: String,
+    pane_id: String,
+    instance_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BridgeSendParams {
+    bridge_id: String,
+    line: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BridgeParams {
+    bridge_id: String,
 }
 
 fn channel_not_found(hint: &str) -> EngineError {
