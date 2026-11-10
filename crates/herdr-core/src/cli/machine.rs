@@ -24,6 +24,12 @@ pub(super) enum MachineCmd {
 pub(super) enum ClassicCmd {
     /// Observe native pane/runtime and workspace/tab IDs, without focusing.
     List(MachineParams),
+    /// Create a native split without focusing it; returns its native identity.
+    Create(crate::api::ClassicCreateParams),
+    /// Launch exact process argv/env/cwd in a native pane (input acknowledgement only).
+    Start(crate::api::ClassicStartParams),
+    /// Inspect native foreground processes for launch reconciliation.
+    Inspect(crate::api::ClassicInspectParams),
     /// Read recent native text (not a stream).
     Read(crate::api::ClassicReadParams),
     /// Send explicit native text/keys, with no retry or implicit Enter.
