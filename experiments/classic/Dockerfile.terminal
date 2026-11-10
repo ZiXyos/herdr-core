@@ -1,0 +1,6 @@
+FROM rust:1.95.0-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --locked -p herdr-classic --example two_clients
+FROM hydra-compat-modern:c6b316f
+COPY --from=build /src/target/debug/examples/two_clients /usr/local/bin/classic-two-clients
