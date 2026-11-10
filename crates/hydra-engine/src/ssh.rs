@@ -301,6 +301,59 @@ impl SshTransport {
         }
     }
 
+    /// Runs one engine-defined command and returns its bounded stdout. Never called with JS input.
+    pub async fn exec_fixed(&self, command: &'static str, max_bytes: usize) -> Result<Vec<u8>, EngineError> {
+        let run = async {
+            let mut channel = self.handle.channel_open_session().await.ok()?;
+            channel.exec(true, command).await.ok()?;
+            channel.eof().await.ok()?;
+            let mut output = Vec::new();
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } => {
+                        if output.len().saturating_add(data.len()) > max_bytes {
+                            channel.close().await.ok();
+                            return Some(Err(()));
+                        }
+                        output.extend_from_slice(&data);
+                    }
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+            Some(Ok(output))
+        };
+        match tokio::time::timeout(EXCHANGE_TIMEOUT, run).await.ok().flatten() {
+            Some(Ok(output)) => Ok(output),
+            Some(Err(())) => Err(EngineError::new(
+                "bridge_unavailable",
+                "The bridge registry is too large",
+                "remove stale bridge directories on the host",
+            )),
+            None => {
+                self.transport_lost(false);
+                Err(EngineError::transport("Could not read the bridge registry"))
+            }
+        }
+    }
+
+    /// Opens a Unix socket on the host (`direct-streamlocal@openssh.com`). A refusal is not a lost
+    /// transport: sshd may forbid forwarding, or the socket may be gone.
+    pub async fn open_unix_stream(&self, socket_path: &str) -> Result<russh::ChannelStream<client::Msg>, EngineError> {
+        match tokio::time::timeout(EXCHANGE_TIMEOUT, self.handle.channel_open_direct_streamlocal(socket_path)).await {
+            Ok(Ok(channel)) => Ok(channel.into_stream()),
+            Ok(Err(_)) => Err(EngineError::new(
+                "bridge_unavailable",
+                "The host refused the bridge socket",
+                "the bridge may have stopped, or sshd has AllowStreamLocalForwarding disabled",
+            )),
+            Err(_) => {
+                self.transport_lost(false);
+                Err(EngineError::transport("Timed out opening the bridge socket"))
+            }
+        }
+    }
+
     pub async fn disconnect(&self) {
         self.handle.disconnect(Disconnect::ByApplication, "", "English").await.ok();
     }
