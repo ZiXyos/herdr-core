@@ -1,9 +1,16 @@
 //! Transport-neutral client for classic Herdr's newline JSON control API (protocol 22).
 //! Native IDs never enter modern Core's terminal registry or address rewriter.
 
+mod launch;
+
+pub use launch::{
+    Correlation, CreateResult, InspectResult, Launch, Process, ProcessInfo, Split, SplitDirection, StartResult, create,
+    inspect, launch_command, start,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 pub const MAX_BYTES: usize = 1024 * 1024;
 pub const PROTOCOL: u64 = 22;
@@ -67,7 +74,7 @@ pub fn unsupported(operation: &str) -> ControlError {
     ControlError::new(
         "unsupported_backend_capability",
         format!("classic does not support Core {operation}"),
-        "use classic.list/read/send; no raw streams, run/wait, file operations or remote Core installation",
+        "use classic.list/read/send/create/start/inspect; no raw streams, run/wait, file operations or remote Core installation",
     )
 }
 
@@ -77,6 +84,11 @@ pub struct Pane {
     pub terminal_id: String,
     pub workspace_id: String,
     pub tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Opaque native metadata, including optional client launch correlation.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tokens: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
@@ -113,7 +125,7 @@ pub struct SendInput<'a> {
     pub keys: &'a [String],
 }
 
-fn protocol(message: &str) -> ControlError {
+pub(crate) fn protocol(message: &str) -> ControlError {
     ControlError::new("classic_protocol", message, "supported endpoint: classic Herdr speaking JSON API protocol 22")
 }
 
@@ -122,7 +134,7 @@ pub fn lost(mutation: bool) -> ControlError {
         if mutation { "classic_outcome_unknown" } else { "classic_transport" },
         "classic connection ended, timed out, or returned an invalid response",
         if mutation {
-            "input may have been delivered; inspect the pane before deciding whether to retry"
+            "the native mutation may have happened; reconcile authoritative state before deciding whether to retry"
         } else {
             "check SSH access and the explicitly named classic session"
         },
@@ -174,7 +186,7 @@ pub async fn list<T: ControlTransport + ?Sized>(transport: &T, session: &str) ->
     inventory(transport.exchange(session, Request { method: "pane.list", params: json!({}), mutation: false }).await?)
 }
 
-fn correlate(panes: &Inventory, pane: &str, terminal: &str) -> Result<(), ControlError> {
+pub(crate) fn correlate(panes: &Inventory, pane: &str, terminal: &str) -> Result<(), ControlError> {
     if !panes.panes.iter().any(|p| p.pane_id == pane && p.terminal_id == terminal) {
         return Err(ControlError::new(
             "classic_stale_identity",

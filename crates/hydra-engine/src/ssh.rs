@@ -285,6 +285,22 @@ impl SshTransport {
         Ok(tx)
     }
 
+    /// Opens the classic stable-surface bridge as a byte stream decoded in Rust by `herdr-classic`.
+    pub async fn open_stable_stream(&self, session: &str) -> Result<russh::ChannelStream<client::Msg>, EngineError> {
+        let opened = async {
+            let channel = self.handle.channel_open_session().await.ok()?;
+            channel.exec(true, format!("herdr --session {session} remote-client-bridge")).await.ok()?;
+            Some(channel)
+        };
+        match tokio::time::timeout(EXCHANGE_TIMEOUT, opened).await.ok().flatten() {
+            Some(channel) => Ok(channel.into_stream()),
+            None => {
+                self.transport_lost(false);
+                Err(EngineError::transport("Could not open the classic stable bridge channel"))
+            }
+        }
+    }
+
     pub async fn disconnect(&self) {
         self.handle.disconnect(Disconnect::ByApplication, "", "English").await.ok();
     }

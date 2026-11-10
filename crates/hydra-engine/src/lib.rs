@@ -3,8 +3,9 @@
 
 mod ffi;
 mod ssh;
+mod terminal;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -18,8 +19,24 @@ use tokio_util::sync::CancellationToken;
 pub type EventSender = mpsc::Sender<Value>;
 
 /// What a verified classic session supports through this engine. Anything absent
-/// (layout, workspace/pane creation, modern install, raw classic API access) is unsupported, not implied.
-pub const CAPABILITIES: &[&str] = &["classic.list", "classic.read", "classic.send", "channel.stable"];
+/// (layout, workspace/tab creation, modern install, raw classic API access) is unsupported, not implied.
+/// `classic.create` is an unfocused split of an existing pane; `terminal.stable` is the decoded
+/// stable-endpoint surface (`channel.stable` remains the raw allowlisted byte channel).
+pub const CAPABILITIES: &[&str] = &[
+    "classic.list",
+    "classic.read",
+    "classic.send",
+    "classic.create",
+    "classic.start",
+    "classic.inspect",
+    "channel.stable",
+    "terminal.stable",
+];
+
+/// Methods whose in-flight cancellation or shutdown leaves the remote effect unknown.
+fn mutating(method: &str) -> bool {
+    matches!(method, "send" | "create" | "start" | "terminalInput" | "terminalFocusTab")
+}
 type EventReceiver = mpsc::Receiver<Value>;
 
 /// Bounded event queue depth. `channelData` waits for space (SSH flow control, never dropped);
@@ -153,6 +170,7 @@ impl Events {
 pub struct Engine {
     sessions: Mutex<HashMap<String, Session>>,
     channels: Mutex<HashMap<String, ByteChannel>>,
+    terminals: Mutex<HashMap<String, terminal::Terminal>>,
     requests: StdMutex<Requests>,
     events: Events,
     event_receiver: Mutex<EventReceiver>,
@@ -166,6 +184,7 @@ impl Engine {
         Arc::new(Self {
             sessions: Mutex::new(HashMap::new()),
             channels: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
             requests: StdMutex::new(Requests::default()),
             events: Events { sender, dropped: Arc::new(AtomicU64::new(0)) },
             event_receiver: Mutex::new(receiver),
@@ -215,12 +234,12 @@ impl Engine {
         let result = tokio::select! {
             result = self.execute_inner(method.clone(), params) => result,
             () = token.cancelled() => Err(if self.shutdown.is_cancelled() {
-                if method == "send" {
+                if mutating(&method) {
                     herdr_classic_control::lost(true).into()
                 } else {
                     EngineError::shutdown()
                 }
-            } else if method == "send" {
+            } else if mutating(&method) {
                 ControlError::new(
                     "classic_outcome_unknown",
                     "Input was cancelled while in flight",
@@ -256,6 +275,7 @@ impl Engine {
             "disconnect" => {
                 let p: SessionParams = parse(params)?;
                 self.remove_session(&p.session_id).await?;
+                self.close_terminals(&p.session_id).await;
                 self.events.control(json!({"kind":"disconnected","sessionId":p.session_id}));
                 Ok(json!({"disconnected":true}))
             }
@@ -285,6 +305,85 @@ impl Engine {
                 .await?;
                 Ok(serde_json::to_value(sent)
                     .map_err(|_| EngineError::new("internal", "Could not encode send result", "retry"))?)
+            }
+            "create" => {
+                let p: CreateParams = parse(params)?;
+                let (transport, session) = self.session(&p.session_id).await?;
+                let split = herdr_classic_control::Split {
+                    target_pane_id: &p.target_pane_id,
+                    terminal_id: &p.terminal_id,
+                    direction: p.direction,
+                    cwd: p.cwd.as_deref(),
+                    env: &p.env,
+                    launch_id: &p.launch_id,
+                    configuration_hash: &p.configuration_hash,
+                };
+                encode(herdr_classic_control::create(&transport, &session, &split).await?)
+            }
+            "start" => {
+                let p: StartParams = parse(params)?;
+                let (transport, session) = self.session(&p.session_id).await?;
+                let launch = herdr_classic_control::Launch {
+                    argv: &p.argv,
+                    cwd: p.cwd.as_deref(),
+                    env: &p.env,
+                    launch_id: &p.launch_id,
+                    configuration_hash: &p.configuration_hash,
+                };
+                encode(herdr_classic_control::start(&transport, &session, &p.pane_id, &p.terminal_id, &launch).await?)
+            }
+            "inspect" => {
+                let p: PaneParams = parse(params)?;
+                let (transport, session) = self.session(&p.session_id).await?;
+                encode(herdr_classic_control::inspect(&transport, &session, &p.pane_id, &p.terminal_id).await?)
+            }
+            "terminalOpen" => {
+                let p: TerminalOpenParams = parse(params)?;
+                if !(10..=500).contains(&p.cols) || !(4..=300).contains(&p.rows) {
+                    return Err(EngineError::new(
+                        "invalid_params",
+                        "Terminal size out of range",
+                        "use 10..500 columns and 4..300 rows",
+                    ));
+                }
+                // Client-chosen id: the caller routes events that may arrive before this call returns.
+                let valid = |id: &str| {
+                    (1..=64).contains(&id.len())
+                        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                };
+                if !valid(&p.terminal_id) || self.terminals.lock().await.contains_key(&p.terminal_id) {
+                    return Err(EngineError::new(
+                        "invalid_params",
+                        "Terminal id must be a new 1..64 character [A-Za-z0-9_-] id",
+                        "choose a unique terminal id",
+                    ));
+                }
+                self.open_terminal(p.terminal_id, p.session_id, 1, (p.cols, p.rows)).await
+            }
+            "terminalReconnect" => {
+                let p: TerminalParams = parse(params)?;
+                let old = self.terminals.lock().await.remove(&p.terminal_id).ok_or_else(terminal_not_found)?;
+                old.stop.cancel();
+                self.open_terminal(p.terminal_id, old.session_id, old.epoch + 1, (old.cols, old.rows)).await
+            }
+            "terminalInput" => {
+                let p: TerminalInputParams = parse(params)?;
+                let events = terminal::input_events(p.events)?;
+                let handle = self.terminal_handle(&p.terminal_id).await?;
+                handle.send_input(&p.pane_id, events).await?;
+                Ok(json!({"sent":true}))
+            }
+            "terminalFocusTab" => {
+                let p: TerminalFocusParams = parse(params)?;
+                let handle = self.terminal_handle(&p.terminal_id).await?;
+                let result = handle.focus_tab(&p.tab_id).await?;
+                Ok(json!({"result":result}))
+            }
+            "terminalClose" => {
+                let p: TerminalParams = parse(params)?;
+                let terminal = self.terminals.lock().await.remove(&p.terminal_id).ok_or_else(terminal_not_found)?;
+                terminal.stop.cancel();
+                Ok(json!({"closed":true}))
             }
             "channelOpen" => {
                 let p: ChannelOpenParams = parse(params)?;
@@ -345,6 +444,76 @@ impl Engine {
                 format!("Unknown engine method {method:?}"),
                 "use the typed HydraEngine interface",
             )),
+        }
+    }
+
+    /// Registers the terminal (with its epoch) before dialing, so a failed open still owns the epoch:
+    /// the failure is reported as that epoch's fatal error and `terminalReconnect` starts the next one.
+    async fn open_terminal(
+        &self,
+        terminal_id: String,
+        session_id: String,
+        epoch: u64,
+        size: (u16, u16),
+    ) -> Result<Value, EngineError> {
+        let stop = self.shutdown.child_token();
+        self.terminals.lock().await.insert(
+            terminal_id.clone(),
+            terminal::Terminal {
+                session_id: session_id.clone(),
+                epoch,
+                cols: size.0,
+                rows: size.1,
+                handle: None,
+                stop: stop.clone(),
+            },
+        );
+        let opened = match self.session(&session_id).await {
+            Ok((transport, session)) => {
+                terminal::open(&transport, &session, &terminal_id, epoch, size, self.events.clone(), stop).await
+            }
+            Err(error) => Err(error),
+        };
+        match opened {
+            Ok(opened) => {
+                if let Some(entry) = self.terminals.lock().await.get_mut(&terminal_id).filter(|t| t.epoch == epoch) {
+                    entry.handle = Some(opened.handle);
+                }
+                Ok(json!({"terminalId":terminal_id,"epoch":epoch,"serverVersion":opened.server_version}))
+            }
+            Err(error) => {
+                self.events.control(terminal::error_event(&terminal_id, epoch, &error.kind, &error.message));
+                Err(error)
+            }
+        }
+    }
+
+    async fn terminal_handle(&self, id: &str) -> Result<herdr_classic::ClassicEndpointHandle, EngineError> {
+        let terminals = self.terminals.lock().await;
+        let terminal = terminals.get(id).ok_or_else(terminal_not_found)?;
+        terminal.handle.clone().ok_or_else(|| {
+            EngineError::new(
+                "classic_stale_state",
+                "The terminal is not connected; input was not sent",
+                "reconnect the terminal",
+            )
+        })
+    }
+
+    async fn close_terminals(&self, session_id: &str) {
+        let mut terminals = self.terminals.lock().await;
+        let ids: Vec<String> =
+            terminals.iter().filter(|(_, t)| t.session_id == session_id).map(|(id, _)| id.clone()).collect();
+        for id in ids {
+            if let Some(terminal) = terminals.remove(&id) {
+                terminal.stop.cancel();
+                self.events.control(terminal::error_event(
+                    &id,
+                    terminal.epoch,
+                    "session_not_found",
+                    "The SSH session was disconnected",
+                ));
+            }
         }
     }
 
@@ -449,6 +618,82 @@ impl Engine {
             tokio::time::timeout(std::time::Duration::from_secs(2), session.transport.disconnect()).await.ok();
         }
     }
+}
+
+fn terminal_not_found() -> EngineError {
+    EngineError::new("terminal_not_found", "Unknown or closed terminal", "open a terminal first")
+}
+
+fn encode<T: Serialize>(value: T) -> Result<Value, EngineError> {
+    serde_json::to_value(value).map_err(|_| EngineError::new("internal", "Could not encode result", "retry"))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateParams {
+    session_id: String,
+    target_pane_id: String,
+    terminal_id: String,
+    direction: herdr_classic_control::SplitDirection,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    launch_id: String,
+    configuration_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartParams {
+    session_id: String,
+    pane_id: String,
+    terminal_id: String,
+    argv: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    launch_id: String,
+    configuration_hash: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaneParams {
+    session_id: String,
+    pane_id: String,
+    terminal_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOpenParams {
+    session_id: String,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalParams {
+    terminal_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalInputParams {
+    terminal_id: String,
+    pane_id: String,
+    events: Vec<terminal::InputEvent>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalFocusParams {
+    terminal_id: String,
+    tab_id: String,
 }
 
 fn channel_not_found(hint: &str) -> EngineError {

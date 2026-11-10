@@ -636,6 +636,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
         Cmd::Classic { action } => {
             let (method, params) = match action {
                 ClassicCmd::List(p) => ("classic.list", to(&p)),
+                ClassicCmd::Create(p) => ("classic.create", to(&p)),
+                ClassicCmd::Start(p) => ("classic.start", to(&p)),
+                ClassicCmd::Inspect(p) => ("classic.inspect", to(&p)),
                 ClassicCmd::Read(p) => ("classic.read", to(&p)),
                 ClassicCmd::Send(p) => ("classic.send", to(&p)),
             };
@@ -890,6 +893,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("server stop", "server.stop"),
     ("server restart", "server.restart"),
     ("classic list", "classic.list"),
+    ("classic create", "classic.create"),
+    ("classic start", "classic.start"),
+    ("classic inspect", "classic.inspect"),
     ("classic read", "classic.read"),
     ("classic send", "classic.send"),
     ("machine add", "machine.add"),

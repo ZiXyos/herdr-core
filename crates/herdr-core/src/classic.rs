@@ -3,7 +3,9 @@
 use crate::machines::{Backend, Machine, Reach};
 use crate::rpc::RpcError;
 use herdr_classic_control::{ControlError, ControlTransport, MAX_BYTES, Request};
-pub use herdr_classic_control::{Inventory, Pane, ReadResult, SendResult, Text};
+pub use herdr_classic_control::{
+    CreateResult, InspectResult, Inventory, Pane, ReadResult, SendResult, StartResult, Text,
+};
 use serde_json::Value;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -125,6 +127,62 @@ pub async fn send(
         },
     )
     .await?)
+}
+
+/// `labels` keeps the last of duplicate keys; the entry count is bounded before that.
+fn env(entries: &[crate::api::Label]) -> Result<std::collections::BTreeMap<String, String>, RpcError> {
+    if entries.len() > 64 {
+        return Err(RpcError::invalid_params("at most 64 environment entries"));
+    }
+    Ok(crate::api::labels(entries))
+}
+
+pub async fn create(
+    paths: &crate::paths::Paths,
+    m: &Machine,
+    p: &crate::api::ClassicCreateParams,
+) -> Result<CreateResult, RpcError> {
+    let env = env(&p.env)?;
+    let direction = match p.direction {
+        crate::api::ClassicSplitDirection::Right => herdr_classic_control::SplitDirection::Right,
+        crate::api::ClassicSplitDirection::Down => herdr_classic_control::SplitDirection::Down,
+    };
+    let split = herdr_classic_control::Split {
+        target_pane_id: &p.target_pane_id,
+        terminal_id: &p.terminal_id,
+        direction,
+        cwd: p.cwd.as_deref(),
+        env: &env,
+        launch_id: &p.launch_id,
+        configuration_hash: &p.configuration_hash,
+    };
+    Ok(herdr_classic_control::create(&Subprocess { paths, to: m.reach() }, session(m)?, &split).await?)
+}
+
+pub async fn start(
+    paths: &crate::paths::Paths,
+    m: &Machine,
+    p: &crate::api::ClassicStartParams,
+) -> Result<StartResult, RpcError> {
+    let env = env(&p.env)?;
+    let launch = herdr_classic_control::Launch {
+        argv: &p.argv,
+        cwd: p.cwd.as_deref(),
+        env: &env,
+        launch_id: &p.launch_id,
+        configuration_hash: &p.configuration_hash,
+    };
+    let to = Subprocess { paths, to: m.reach() };
+    Ok(herdr_classic_control::start(&to, session(m)?, &p.pane_id, &p.terminal_id, &launch).await?)
+}
+
+pub async fn inspect(
+    paths: &crate::paths::Paths,
+    m: &Machine,
+    p: &crate::api::ClassicInspectParams,
+) -> Result<InspectResult, RpcError> {
+    let to = Subprocess { paths, to: m.reach() };
+    Ok(herdr_classic_control::inspect(&to, session(m)?, &p.pane_id, &p.terminal_id).await?)
 }
 
 #[cfg(test)]

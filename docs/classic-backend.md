@@ -1,32 +1,18 @@
-# Optional classic control backend
+# Classic Herdr sessions
 
-This fork retains modern Core. The opt-in `classic-backend` Cargo feature adds a
-fresh, narrow JSON control client for classic Herdr **0.9.5 / protocol 22**. It does
-not embed classic source, install Core remotely, or implement a multiplexer.
+A running classic Herdr session (the one with workspaces, tabs and panes) on
+another machine can be added as a machine and talked to over ssh, without
+installing anything there. It is a small, separate control surface: see which
+panes exist, read their recent text, type into them. It is not a core, and its
+panes are not terminals here.
 
-## Two builds
+[Back to the README](../README.md) · [Machines](machines.md) ·
+[Command reference](commands.md#hc-classic)
 
-```sh
-cargo build --locked -p herdr-core --target-dir target/modern
-cargo build --locked -p herdr-core --features classic-backend --target-dir target/classic
-```
+## Use
 
-Use `target/modern/debug/herdr-core` for normal modern server deployment and
-`target/classic/debug/herdr-core` locally when classic compatibility is needed.
-Neither command installs or restarts anything. The feature-enabled binary still
-supports modern peers. It is **not** installed on the classic host.
-
-Both builds expose the same schema/profile format. Only the enabled build compiles
-the classic transport and advertises `classic_control` in `hello.features`.
-The default build returns `backend_disabled` for classic requests and preserves
-saved classic profiles without dialing them. Use separate local `HC_SESSION`s
-if running both builds; starting a different CLI binary does not replace an
-already-running Core in that session.
-
-## Usage
-
-With the feature-enabled binary (`hc` below), an already-running remote classic
-session `work`, and normally verified SSH access:
+The session must already be running there under a name, and ssh must get in
+without asking (`hc machine login` first if it does):
 
 ```sh
 hc machine add vps --name native --backend classic --session work
@@ -35,88 +21,118 @@ hc classic read native w1:p1 term_RETURNED_BY_LIST --lines 100
 hc classic send native w1:p1 term_RETURNED_BY_LIST --text 'printf hello' --key enter
 ```
 
-Substitute the exact pane and terminal runtime IDs returned by discovery.
-`--text` is literal input, not an SSH shell fragment; Enter is never implicit.
-`--key` repeats and uses native classic key names. Send returns `accepted: true`
-only after the native acknowledgement; this does not mean command completion or
-success. Read returns `read.text`, native associations, revision and truncation.
+`classic list` gives each pane's id, its runtime id, and the workspace and tab
+it sits in. Use the pane and runtime ids exactly as returned; they are opaque.
+`read` returns recent text (`read.text`), with the pane's workspace/tab,
+revision and whether it was truncated. `send` types `--text` literally and
+presses each `--key` (native classic key names, repeatable); Enter is never
+implied. `accepted: true` means the session took the input, not that a command
+ran or finished.
 
-`machine login` probes classic again after login; rename/remove only affect the
-local profile. `machine update` and `--install` reject classic. There is no modern
-fallback, remote bootstrap, or automatic upgrade.
+`machine ls` shows a classic machine as `on_demand`: there is no line kept
+open; every command is one ssh exchange. `machine login` probes it again.
+`machine rename` and `machine rm` only change what this hc knows.
 
-## Architecture and identity
-
-- `src/classic.rs`: feature-gated codec/SSH exchanges, bounds, typed projections,
-  observed runtime-ID correlation, and disabled-build stubs.
-- `machines.rs`: explicit backend, defaulting to modern for old profiles.
-- `api.rs`, `api/types.rs`, `cli/machine.rs`: one API table and CLI params;
-  `classic.list`, `classic.read`, `classic.send` are separate from Core terminals.
-- `remote.rs`: classic is on-demand, excluded from modern supervision/inventory;
-  modern routed operations (including attach) fail with a capability error.
-
-A saved classic profile identifies an SSH target/command plus a named session.
-SSH authenticates the host using normal host-key verification. No permanent Core
-identity or classic boot ID is invented: the legacy `id` field remains an empty
-string, while `host` is the configured SSH target. Pane, runtime, workspace and tab
-IDs remain opaque native strings, never numeric local holders or recursively
-rewritten addresses. Backend metadata records associations, not layout ownership.
-Classic inferred agent status is deliberately discarded; OSC 7501 remains Core's
-only status source.
-
-Every operation opens bounded SSH exchanges to
-`herdr --session NAME remote-api-bridge`. Probes check version and protocol;
-there is no persistent event stream. `machine ls` reports `on_demand`, not a claim
-that a connection is alive (`backend_disabled` in the default build).
-
-## Safety and limits
-
-Each exchange has a 20-second deadline and a 1 MiB request/response limit. Reads
-request 1–1000 recent lines. Input accepts at most 64 KiB text and 64 key names
-of at most 64 bytes. Requests and replies are correlated; malformed/partial or
-oversized replies are rejected. Input is never retried after a lost reply;
-`classic_outcome_unknown` means inspect before deciding whether to retry.
-
-Read/input preflight compares the supplied pane/runtime pair with fresh discovery.
-This detects an **observed** mismatch, not atomic boot fencing: JSON input has no
-expected-runtime field. Concurrent native pane replacement between preflight and
-input remains a race. Avoid automating input across such replacement. A stable
-client codec with boot fencing is future work, not emulated here.
-
-Discovery/read never call focus, resize, scroll or `layout.apply`. Input does not
-invoke focus. Public classic focus can affect other clients and is not exposed.
-
-## Support matrix
-
-| Surface | First slice |
-| --- | --- |
-| Existing native panes and runtime associations | Supported/tested |
-| Recent text read; explicit text/keys | Supported/tested |
-| Reconnect without killing/duplicating native shell | Supported/tested |
-| Modern-to-modern runtime | Preserved; regression tested |
-| Classic pane/workspace creation | Unsupported; deliberate native setup only in fixture |
-| Modern run/wait/recovery/files | Unsupported on classic |
-| Attach/raw bytes, cell surfaces, resize, graphics | Unsupported; no fake raw translation |
-| Native status/brand inference | Not exposed |
-| Harness/chat/artifact protocols | Not implemented |
-| Mobile builds/transports | Not built or claimed; SSH subprocess transport remains desktop-only |
-
-## Reproduce interoperability
-
-`experiments/classic/run.sh` builds this modified checkout with the feature and
-runs a pinned classic-only SSH host. It requires the sibling research fixture
-images `hydra-compat-classic:0.9.5` and `hydra-compat-modern:c6b316f` (the latter is
-only a client runtime base; its Core binary is replaced by the fork build).
-Current Dockerfile targets Linux arm64. Initialize `vendor/ghostty` first.
+## Create a pane and start a program
 
 ```sh
-bash experiments/classic/run.sh
+hc classic create native w1:p1 term_RETURNED_BY_LIST --direction down --cwd /work \
+  --env KEY=value --launch-id launch-1 --configuration-hash <64 lowercase hex>
+hc classic start native w1:p2 term_RETURNED_BY_CREATE --cwd /work --env KEY=value \
+  --launch-id launch-1 --configuration-hash <same> -- program arg1 'arg 2'
+hc classic inspect native w1:p2 term_RETURNED_BY_CREATE
 ```
 
-The script uses uniquely named containers/network, ephemeral pinned SSH keys, no
-public ports, credentials/home mounts, privileged mode or Docker socket mount.
-It removes its containers/network/keys on exit. Build images/cache are retained.
-The original stock protocol rejection test is preserved; the fixture creates its
-native pane **before** adapter registration, verifies discovery/control/read,
-reconnect/PID continuity, no focus or pane duplication, and remote Core absence
-before and after. See `classic-validation.md` for recorded validation results.
+`create` checks the named pane/runtime, splits it with `focus: false`, cwd and
+env (plus `HYDRA_LAUNCH_ID` and `HYDRA_CONFIGURATION_HASH`), then tags the new
+pane with the `hydra_launch_id` / `hydra_configuration_hash` metadata tokens
+that `classic list` shows. A lost split reply is `classic_outcome_unknown`; a
+lost or refused tag keeps the confirmed pane and reports `correlation:
+unknown|unavailable`. Correlation is evidence for reconciling, not idempotency.
+
+`start` checks every value before anything is sent: an executable, at most 128
+arguments, POSIX env names, the two reserved keys, 64 KiB in all, an absolute
+`cwd`, and **no control characters** in any argument, env value or cwd (C0
+including tab, newline and CR, DEL, and C1). `create` applies the same cwd/env
+rules before its first request. Control characters are refused rather than
+quoted because the command is *typed*: the tty and the shell's line editor act
+on them (erase, kill line, interrupt, completion, submit) before the shell sees
+any quote. Example: `'x<^U>touch /tmp/f #'` runs `touch` in dash, and in bash a
+`^C` cancels Herdr's bracketed paste and the rest runs. `classic send` is the
+deliberate literal-input path and is not restricted this way.
+
+Then it asks the pane for its foreground processes. It types nothing unless
+exactly one foreground process is the pane's own shell, leading its process
+group, with an argv of an interactive `sh`, `bash`, `dash`, `ash`, `zsh`, `ksh`,
+`mksh` or `pdksh` (no script operand, `-c`, `-s` or long option). Anything else,
+an unknown argv included, is `classic_shell_not_ready`. Shells other than bash
+and zsh may read through the tty's canonical buffer, which truncates a line at
+1024 bytes on macOS and 4095 on Linux and leaves an open quote. For them a
+command of 1000 bytes or more is also `classic_shell_not_ready`.
+
+Then it types `cd -- 'cwd' && KEY='v' 'argv0' 'arg' ...` with Enter. Single
+quotes keep shell metacharacters (`$`, backquotes, `;`, `!`, globs) and UTF-8
+literal. This assumes default line editing: user `bind` macros, `stty` special
+characters moved to printable keys, or a shell with editing switched off at run
+time are not detected. The reply is `accepted: true` plus `prestart`, the
+foreground identity seen before typing. Acceptance is not proof the program
+runs: compare `inspect` with `prestart` and require a new foreground PID and
+process group.
+
+The readiness check and the input are two requests, so a foreground that
+changes in between still gets the text. Readiness also cannot see the line
+buffer. Half-typed input, a continuation (PS2) prompt, or typeahead that a
+still-running rc file or prompt hook consumes all look like an idle prompt, and
+the launch is appended to or swallowed by them. In that case the outcome is
+whatever the shell makes of the combined line, so treat acceptance as unknown
+until `inspect` shows the new process.
+
+The host resolves `cwd`: a symlink becomes its target, and a missing directory
+silently falls back to another directory (verified on Herdr 0.9.5). The pane
+`cwd` returned by `create` and the process `cwd` from `inspect` are those
+resolved paths. They can only equal what was requested when the request was
+already canonical.
+
+A program can rewrite its own argv. On Linux, Node's `process.title` does this,
+and Pi sets it at startup. After that, `inspect` shows only the title, so argv
+alone cannot confirm such a launch. A program may report its own readiness
+instead by setting pane metadata tokens through `HERDR_SOCKET_PATH` /
+`HERDR_PANE_ID`. hc passes all tokens through `classic list` unchanged and
+interprets none of them.
+`inspect` only looks.
+Nothing here is specific to Pi or any other program.
+
+## What it does not do
+
+- Nothing is installed or upgraded there. `--install` and `machine update`
+  refuse a classic machine; a session that does not answer with JSON API
+  protocol 22 is refused, not upgraded.
+- Classic panes are not terminals. `hc ls` leaves them out, and attach, run,
+  wait, read, files and anything else addressed as `native/...` answer
+  `unsupported_backend_capability`. There is no raw byte stream, no resizing,
+  no graphics.
+- Only `classic create` makes a pane: an unfocused split of a pane you name.
+  No tabs or workspaces are created, and nothing is focused, resized or
+  scrolled. There is no `layout.apply`.
+- No agent status is read from classic. Status in hc comes only from OSC 7501.
+
+## Limits and failure modes
+
+Each exchange has a 20 s deadline and a 1 MiB request/response bound. `read`
+asks for 1 to 1000 lines. `send` takes at most 64 KiB of text and 64 keys of up
+to 64 bytes each, and needs at least one of the two.
+
+Before `read` and `send`, hc lists the panes again and checks that the pane you
+named still runs the runtime you named; a mismatch is `classic_stale_identity`
+and nothing is sent. This catches a pane you saw being replaced, but it is not
+atomic: a pane replaced between that check and the input still gets it. Do not
+automate input into panes that others may be replacing.
+
+Errors are named for what was observed:
+
+- `classic_transport`: ssh or the bridge did not answer; nothing was changed.
+- `classic_protocol`: it answered, but not as a classic session hc understands.
+- `classic_remote`: the session refused the request (its own error code and
+  message are in the text).
+- `classic_outcome_unknown`: input was sent but no acknowledgement came back.
+  It may have landed. hc never retries input; look at the pane before you do.

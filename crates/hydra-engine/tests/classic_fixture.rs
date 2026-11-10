@@ -63,7 +63,7 @@ async fn embedded_ssh_controls_existing_classic_pane() {
 
     let session = call(&engine, "3", "connect", connect_params(&f, Some(&f.fingerprint))).await.unwrap();
     assert_eq!(session["version"], "0.9.5");
-    assert_eq!(session["capabilities"], json!(["classic.list", "classic.read", "classic.send", "channel.stable"]));
+    assert_eq!(session["capabilities"], json!(hydra_engine::CAPABILITIES));
     let id = session["sessionId"].as_str().unwrap().to_string();
 
     let list = call(&engine, "4", "list", json!({"sessionId":id})).await.unwrap();
@@ -203,4 +203,176 @@ async fn sessions_are_concurrent_and_independent() {
     assert_eq!(connected.len(), 2, "{events:?}");
     assert!(events.iter().all(|event| event["kind"] != "transportLost"));
     engine.shutdown().await;
+}
+
+fn surface_text(surface: &Value) -> String {
+    surface["cells"]
+        .as_array()
+        .map(|cells| cells.iter().filter_map(|c| c["symbol"].as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// Waits for a terminal event of `terminal_id` matching `pred`, skipping others.
+async fn wait_terminal(engine: &Engine, terminal_id: &str, within: Duration, pred: impl Fn(&Value) -> bool) -> Value {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = next_event(engine, left).await;
+        if event["kind"] == "terminal" && event["terminalId"] == terminal_id && pred(&event) {
+            return event;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the loopback classic fixture (HYDRA_FIXTURE_PORT/KEY/FINGERPRINT)"]
+async fn launch_and_decoded_terminal_share_one_embedded_session() {
+    let f = fixture();
+    let engine = Engine::new();
+    let session = call(&engine, "c", "connect", connect_params(&f, Some(&f.fingerprint))).await.unwrap();
+    let id = session["sessionId"].as_str().unwrap().to_string();
+    for capability in ["classic.create", "classic.start", "classic.inspect", "terminal.stable"] {
+        assert!(session["capabilities"].as_array().unwrap().iter().any(|c| c == capability), "{capability}");
+    }
+    let list = call(&engine, "l", "list", json!({"sessionId":id})).await.unwrap();
+    let pane = list["panes"][0].clone();
+    let hash = "b".repeat(64);
+    let launch_id = format!("int-{}", std::process::id());
+
+    // Control characters are refused before any native request, on create and start alike.
+    let bad = call(
+        &engine,
+        "bad",
+        "start",
+        json!({"sessionId":id,"paneId":pane["pane_id"],"terminalId":pane["terminal_id"],
+        "argv":["/bin/echo","x\u{15}touch /tmp/PWN #"],"launchId":launch_id,"configurationHash":hash}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(bad["kind"], "invalid_params");
+    let bad = call(
+        &engine,
+        "bad2",
+        "create",
+        json!({"sessionId":id,"targetPaneId":pane["pane_id"],"terminalId":pane["terminal_id"],
+        "direction":"down","cwd":"relative","launchId":launch_id,"configurationHash":hash}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(bad["kind"], "invalid_params");
+
+    let created = call(
+        &engine,
+        "cr",
+        "create",
+        json!({"sessionId":id,"targetPaneId":pane["pane_id"],"terminalId":pane["terminal_id"],
+        "direction":"down","cwd":"/tmp","launchId":launch_id,"configurationHash":hash}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["correlation"], "recorded");
+    let new_pane = created["pane"].clone();
+    let listed = call(&engine, "l2", "list", json!({"sessionId":id})).await.unwrap();
+    let tagged =
+        listed["panes"].as_array().unwrap().iter().find(|p| p["pane_id"] == new_pane["pane_id"]).unwrap().clone();
+    assert_eq!(tagged["tokens"]["hydra_launch_id"], launch_id.as_str());
+
+    let started = call(
+        &engine,
+        "st",
+        "start",
+        json!({"sessionId":id,"paneId":new_pane["pane_id"],"terminalId":new_pane["terminal_id"],
+        "argv":["sleep","300"],"cwd":"/tmp","launchId":launch_id,"configurationHash":hash}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(started["accepted"], true);
+    let shell_pid = started["prestart"]["shell_pid"].clone();
+    let mut observed = Value::Null;
+    for attempt in 0..20 {
+        let inspected = call(
+            &engine,
+            &format!("in{attempt}"),
+            "inspect",
+            json!({"sessionId":id,"paneId":new_pane["pane_id"],"terminalId":new_pane["terminal_id"]}),
+        )
+        .await
+        .unwrap();
+        let fg = inspected["process_info"]["foreground_processes"].clone();
+        if fg.as_array().is_some_and(|p| p.iter().any(|p| p["argv"][0] == "sleep" && p["pid"] != shell_pid)) {
+            observed = fg;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(!observed.is_null(), "the started process is observed as a new foreground process");
+    // An occupied foreground is never typed into.
+    let busy = call(
+        &engine,
+        "st2",
+        "start",
+        json!({"sessionId":id,"paneId":new_pane["pane_id"],"terminalId":new_pane["terminal_id"],
+        "argv":["true"],"launchId":launch_id,"configurationHash":hash}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(busy["kind"], "classic_shell_not_ready");
+    drain(&engine).await;
+
+    let opened = call(&engine, "to", "terminalOpen", json!({"sessionId":id,"terminalId":"t-int","cols":80,"rows":24}))
+        .await
+        .unwrap();
+    let terminal = opened["terminalId"].as_str().unwrap().to_string();
+    assert_eq!(terminal, "t-int");
+    let dup =
+        call(&engine, "to2", "terminalOpen", json!({"sessionId":id,"terminalId":"t-int","cols":80,"rows":24})).await;
+    assert_eq!(dup.unwrap_err()["kind"], "invalid_params");
+    assert_eq!(opened["epoch"], 1);
+    let snapshot = wait_terminal(&engine, &terminal, Duration::from_secs(15), |e| e["type"] == "snapshot").await;
+    assert_eq!(snapshot["epoch"], 1);
+    assert!(snapshot["snapshot"]["panes"].as_array().unwrap().iter().any(|p| p["paneId"] == pane["pane_id"]));
+    wait_terminal(&engine, &terminal, Duration::from_secs(15), |e| e["type"] == "surface").await;
+    let input = json!({"terminalId":terminal,"paneId":pane["pane_id"],"events":[
+        {"type":"text","text":"echo TERM_OK_$((6*7))"},{"type":"key","code":"enter"}]});
+    call(&engine, "ti", "terminalInput", input).await.unwrap();
+    let seen = wait_terminal(&engine, &terminal, Duration::from_secs(15), |e| {
+        e["type"] == "surface" && surface_text(&e["surface"]).contains("TERM_OK_42")
+    })
+    .await;
+    assert_eq!(seen["epoch"], 1);
+    let bad_pane = call(
+        &engine,
+        "tb",
+        "terminalInput",
+        json!({"terminalId":terminal,"paneId":"w9:p9","events":[{"type":"text","text":"x"}]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(bad_pane["kind"], "classic_stale_state", "{bad_pane}");
+
+    let reconnected = call(&engine, "tr", "terminalReconnect", json!({"terminalId":terminal})).await.unwrap();
+    assert_eq!(reconnected["epoch"], 2);
+    let surface =
+        wait_terminal(&engine, &terminal, Duration::from_secs(15), |e| e["type"] == "surface" && e["epoch"] == 2).await;
+    assert!(surface_text(&surface["surface"]).contains("TERM_OK_42"), "same runtime after reconnect");
+    call(&engine, "tc", "terminalClose", json!({"terminalId":terminal})).await.unwrap();
+    let closed = call(
+        &engine,
+        "tc2",
+        "terminalInput",
+        json!({"terminalId":terminal,"paneId":pane["pane_id"],"events":[{"type":"text","text":"x"}]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(closed["kind"], "terminal_not_found");
+    // Interrupt the launched process so the pane returns to its shell.
+    let ctrl_c = call(
+        &engine,
+        "cc",
+        "send",
+        json!({"sessionId":id,"paneId":new_pane["pane_id"],"terminalId":new_pane["terminal_id"],"keys":["Ctrl+c"]}),
+    )
+    .await;
+    let _ = ctrl_c;
+    call(&engine, "d", "disconnect", json!({"sessionId":id})).await.unwrap();
 }
