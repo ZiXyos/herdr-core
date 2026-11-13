@@ -86,6 +86,13 @@ pub struct Pane {
     pub tab_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Opaque name of the agent Herdr itself detected in this pane. Absent for a plain shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Herdr's own report of that agent's state ("idle", "working", "blocked", "done", "unknown").
+    /// Passed through as reported, only when an agent was detected; never inferred here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<String>,
     /// Opaque native metadata, including optional client launch correlation.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<String, String>,
@@ -178,7 +185,14 @@ pub async fn probe<T: ControlTransport + ?Sized>(transport: &T, session: &str) -
 }
 
 fn inventory(v: Value) -> Result<Inventory, ControlError> {
-    serde_json::from_value(v).map_err(|_| protocol("invalid native pane inventory"))
+    let mut inventory: Inventory = serde_json::from_value(v).map_err(|_| protocol("invalid native pane inventory"))?;
+    for pane in &mut inventory.panes {
+        // Herdr reports a placeholder status for every pane; it only means something for an agent.
+        if pane.agent.is_none() {
+            pane.agent_status = None;
+        }
+    }
+    Ok(inventory)
 }
 
 pub async fn list<T: ControlTransport + ?Sized>(transport: &T, session: &str) -> Result<Inventory, ControlError> {
@@ -267,15 +281,21 @@ mod tests {
     }
 
     #[test]
-    fn discovery_drops_vendor_status_and_preserves_opaque_ids() {
-        let panes = inventory(json!({"panes":[{
-            "pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1",
-            "agent_status":"working", "cwd":"/w1:p1"
-        }]}))
+    fn discovery_reports_detected_agents_and_preserves_opaque_ids() {
+        let panes = inventory(json!({"panes":[
+            {"pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1",
+             "agent":"some-agent", "agent_status":"working", "cwd":"/w1:p1"},
+            {"pane_id":"w1:p2", "terminal_id":"term_shell", "workspace_id":"w1", "tab_id":"w1:t1",
+             "agent_status":"unknown"}
+        ]}))
         .unwrap();
         let v = serde_json::to_value(&panes).unwrap();
         assert_eq!(v["panes"][0]["pane_id"], "w1:p1");
-        assert!(v["panes"][0].get("agent_status").is_none());
+        assert_eq!(v["panes"][0]["agent"], "some-agent");
+        assert_eq!(v["panes"][0]["agent_status"], "working");
+        // A shell has no agent, so Herdr's placeholder status is not presented as one.
+        assert!(v["panes"][1].get("agent").is_none());
+        assert!(v["panes"][1].get("agent_status").is_none());
         assert!(correlate(&panes, "w1:p1", "term_native").is_ok());
         assert_eq!(correlate(&panes, "w1:p1", "term_reused").unwrap_err().kind, "classic_stale_identity");
     }
