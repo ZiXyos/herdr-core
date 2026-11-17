@@ -25,6 +25,8 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     s.env.push(("HC_FOREGROUND_MS".into(), "30".into()));
     s.env.push(("TERM".into(), "vt100".into()));
     s.env.push(("TERM_PROGRAM".into(), "keep-test".into()));
+    s.env.push(("COLORTERM".into(), "".into()));
+    s.env.push(("TERM_PROGRAM_VERSION".into(), "1".into()));
     s.env.push(("HC_KEEP_TEST".into(), "preserved".into()));
     let dir = s.root.join("last");
     std::fs::create_dir(&dir).unwrap();
@@ -50,11 +52,15 @@ fn lost_kept_terminal_restarts_in_place_in_its_last_folder() {
     let r = get(&s, &t);
     assert_eq!(r["cwd"], canonical_dir.display().to_string());
     assert_eq!(r["name"], "kept");
-    assert_eq!(r["identity"], "keep-test");
+    assert_eq!(r["identity"], "ghostty");
     assert_eq!((r["cols"].as_u64(), r["rows"].as_u64()), (Some(91), Some(29)));
     let mut viewer = framed::Viewer::attach(&s, &t, 91, 29, serde_json::json!({}));
-    s.json(&["send", &t, "printf 'kept-env:%s:%s\\n' \"$TERM\" \"$HC_KEEP_TEST\""]);
-    viewer.shows("kept-env:vt100:preserved");
+    s.json(&[
+        "send",
+        &t,
+        "printf 'kept-env:%s:%s:%s:%s:%s\\n' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"${TERM_PROGRAM_VERSION-}\" \"$HC_KEEP_TEST\"",
+    ]);
+    viewer.shows("kept-env:xterm-256color:truecolor:ghostty::preserved");
     assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
     assert!(!pid_alive(old));
 }
@@ -374,4 +380,116 @@ fn stopped_kept_terminal_returns_at_next_start() {
     let r = get(&s, &t);
     assert_eq!(r["state"], "live");
     wait_until("shell after start", || get(&s, &t)["pid"].is_number());
+}
+
+#[test]
+fn keep_off_on_a_lost_terminal_reports_it_finished() {
+    let s = Session::new();
+    let t = run(&s, &["--keep", "sleep", "100"]);
+    // A bad shell setting holds recovery, so the record stays lost without a holder.
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "shell = []").unwrap();
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+    unsafe {
+        libc::kill(holder as i32, libc::SIGKILL);
+    }
+    wait_until("lost", || get(&s, &t)["pid"].is_null());
+    let r = s.json(&["keep", &t, "--off"]);
+    assert_eq!(r["state"], "finished", "{r}");
+    assert_eq!(r["reason"], "holder_lost");
+}
+
+#[test]
+fn a_kept_terminal_lost_to_a_reboot_or_its_holder_shows_what_its_program_left_above_the_new_shell() {
+    // As a reboot ends them: the service manager stops the core (a planned handover), then the rest.
+    shows_what_was_left(Some(true), |s, status| {
+        unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGTERM) };
+        wait_until("core gone", || !s.connect_ok());
+        unsafe { libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+    });
+    // The holder alone dies while the core runs.
+    shows_what_was_left(Some(true), |_, status| unsafe {
+        libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    });
+}
+
+#[test]
+fn screen_restore_is_opt_in_and_enabling_it_later_does_not_replay_a_discarded_screen() {
+    for setting in [None, Some(false)] {
+        shows_what_was_left(setting, |s, status| {
+            unsafe { libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGTERM) };
+            wait_until("core gone", || !s.connect_ok());
+            unsafe { libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL) };
+        });
+        shows_what_was_left(setting, |_, status| unsafe {
+            libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        });
+    }
+}
+
+fn shows_what_was_left(setting: Option<bool>, lose: impl Fn(&Session, &serde_json::Value)) {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    if let Some(setting) = setting {
+        std::fs::write(&config, format!("restore_screen = {setting}\n")).unwrap();
+    }
+    let t = run(&s, &["--keep", "sh", "-c", "printf 'left-on-screen\\n'; exec sleep 100"]);
+    wait_until("output", || text(&s, &t).contains("left-on-screen"));
+    let old = get(&s, &t)["pid"].as_i64().unwrap();
+    lose(&s, &s.json(&["server", "status"]));
+    wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+    s.json(&["send", &t, "echo after-$((1+1))"]);
+    wait_until("new shell answers", || text(&s, &t).contains("after-2"));
+    let text = text(&s, &t);
+    if setting == Some(true) {
+        let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
+        assert!(
+            at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"),
+            "{text:?}"
+        );
+        assert_eq!(text.matches("left-on-screen").count(), 1, "{text:?}");
+        assert_eq!(text.matches("this is a new shell").count(), 1, "{text:?}");
+    } else {
+        assert!(!text.contains("left-on-screen") && !text.contains("this is a new shell"), "{text:?}");
+        std::fs::write(&config, "restore_screen = true\n").unwrap();
+        let status = s.json(&["server", "status"]);
+        let old = get(&s, &t)["pid"].as_i64().unwrap();
+        unsafe {
+            libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+            libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        }
+        wait_until("core gone", || !s.connect_ok());
+        wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+        s.json(&["send", &t, "echo after-$((2+1))"]);
+        wait_until("new shell answers", || common::text(&s, &t).contains("after-3"));
+        let text = common::text(&s, &t);
+        assert!(!text.contains("left-on-screen") && !text.contains("this is a new shell"), "{text:?}");
+    }
+}
+
+#[test]
+fn a_saved_screen_comes_back_once_not_after_a_later_loss_that_saved_nothing() {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "restore_screen = true\n").unwrap();
+    let t = run(&s, &["--keep", "sh", "-c", "printf 'before-the-update\\n'; exec sleep 100"]);
+    wait_until("output", || text(&s, &t).contains("before-the-update"));
+    // An update hands the screen to the next core, which reads it.
+    s.json(&["server", "restart"]);
+    assert_eq!(get(&s, &t)["screen"], "exact");
+    let old = get(&s, &t)["pid"].as_i64().unwrap();
+    // A power cut: nothing gets saved.
+    let status = s.json(&["server", "status"]);
+    unsafe {
+        libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+    }
+    wait_until("core gone", || !s.connect_ok());
+    wait_until("new shell", || get(&s, &t)["pid"].as_i64().is_some_and(|p| p != old));
+    s.json(&["send", &t, "echo after-$((1+1))"]);
+    wait_until("new shell answers", || text(&s, &t).contains("after-2"));
+    assert!(!text(&s, &t).contains("before-the-update"), "a screen from before the update came back");
 }

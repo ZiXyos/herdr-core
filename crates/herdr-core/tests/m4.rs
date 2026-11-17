@@ -201,6 +201,66 @@ fn a_send_waits_for_the_person_to_send_or_clear_their_draft() {
 }
 
 #[test]
+fn planned_restart_keeps_the_draft_and_its_original_deadline() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "4000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"draft");
+    let start = Instant::now();
+    std::thread::sleep(Duration::from_millis(1800));
+    s.json(&["server", "restart"]);
+    let sending = Instant::now();
+    s.json(&["send", &t, "x"]);
+    assert!(sending.elapsed() >= Duration::from_millis(1200), "forgot the draft");
+    assert!(start.elapsed() >= Duration::from_millis(3900), "released before its deadline");
+    assert!(start.elapsed() < Duration::from_millis(5200), "restarted the draft clock");
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"next");
+    s.json(&["server", "restart"]);
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    person.typed(b"\r");
+    let start = Instant::now();
+    s.json(&["send", &t, "y"]);
+    assert!(start.elapsed() < Duration::from_millis(1200), "could not submit the restored draft");
+}
+
+#[test]
+fn invalid_delivery_durations_use_defaults_without_losing_the_terminal() {
+    let s = session();
+    let t = s.json(&["run", "--bg", "cat"])["address"].as_str().unwrap().to_string();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    for setting in ["draft_wait", "notes_quiet"] {
+        for value in ["inf", "-inf", "nan", "1e100"] {
+            std::fs::write(&config, format!("{setting} = {value}\n")).unwrap();
+            s.json(&["send", &t, "delivered"]);
+        }
+    }
+    std::fs::write(config, "draft_wait = 0\nnotes_quiet = 0\n").unwrap();
+    s.json(&["send", &t, "recovered"]);
+    wait_until("delivery after fixing config", || text(&s, &t).contains("recovered"));
+}
+
+#[test]
+fn draft_wait_config_releases_a_send_and_zero_keeps_only_the_quiet_pause() {
+    let mut s = session();
+    s.env.push(("HC_DRAFT_MS".into(), "5000".into()));
+    let t = s.json(&["run", "--bg", "sh", "-c", BYTES])["address"].as_str().unwrap().to_string();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let mut person = Viewer::attach(&s, &t, 80, 24, json!({}));
+    for (seconds, minimum, maximum) in [(2.0, 1900, 4000), (0.0, 500, 1600)] {
+        std::fs::write(&config, format!("draft_wait = {seconds}\n")).unwrap();
+        person.typed(b"draft");
+        let start = Instant::now();
+        s.json(&["send", &t, "x"]);
+        assert!(start.elapsed() >= Duration::from_millis(minimum), "released too early: {:?}", start.elapsed());
+        assert!(start.elapsed() < Duration::from_millis(maximum), "held too long: {:?}", start.elapsed());
+    }
+}
+
+#[test]
 fn an_abandoned_draft_send_never_types_and_does_not_hold_up_interrupt() {
     let mut s = session();
     s.env.push(("HC_DRAFT_MS".into(), "2000".into()));
@@ -344,14 +404,14 @@ fn a_program_that_never_reads_its_input_stalls_nobody() {
 #[test]
 fn keys_follow_the_programs_keyboard_modes() {
     let s = session();
-    let t = s.json(&["run", "--bg", "sh", "-c", "printf '\\033[?1h'; stty raw -echo; od -An -c"])["address"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    shows(&s, &t, ""); // started
-    std::thread::sleep(Duration::from_millis(200));
+    // One byte at a time: uutils od (Ubuntu 26.04) holds its output until EOF.
+    // Unquoted $c drops the padding BSD od (macOS) puts before each byte.
+    let probe = "stty raw -echo; printf '\\033[?1hready\\n'; \
+                 while c=$(dd bs=1 count=1 2>/dev/null | od -An -tx1) && [ -n \"$c\" ]; do printf ' %s' $c; done";
+    let t = s.json(&["run", "--bg", "sh", "-c", probe])["address"].as_str().unwrap().to_string();
+    shows(&s, &t, "ready");
     s.json(&["keys", &t, "up", "ctrl+c", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a"]);
-    shows(&s, &t, "033   O   A 003   a");
+    shows(&s, &t, "1b 4f 41 03 61");
     let (code, err) = s.err(&["keys", &t, "hyper+q"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (6, Some("invalid_params")));
 }

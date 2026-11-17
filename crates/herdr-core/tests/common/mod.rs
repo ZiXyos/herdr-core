@@ -16,7 +16,13 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
 /// (GNU and BSD alike; plain od waits for 16 bytes).
 pub const BYTES: &str = "stty raw -echo; while :; do dd bs=1 count=1 2>/dev/null | od -An -tx1; done";
 
-/// An isolated core: its own HC_SESSION and XDG dirs under /var/tmp.
+/// The folder tests put their scratch data in: `HC_TEST_TMPDIR` if set, else
+/// /var/tmp, whose short path keeps socket paths under the macOS limit.
+pub fn test_tmp() -> PathBuf {
+    std::env::var_os("HC_TEST_TMPDIR").map_or_else(|| "/var/tmp".into(), Into::into)
+}
+
+/// An isolated core: its own HC_SESSION and XDG dirs under [`test_tmp`].
 pub struct Session {
     pub root: PathBuf,
     pub env: Vec<(String, String)>,
@@ -30,16 +36,16 @@ impl Session {
         // A hung test should fail in seconds, not stall the suite.
         WATCHDOG.call_once(|| {
             std::thread::spawn(|| {
-                // 30 s here; CI's slower runners set HC_TEST_WATCHDOG_S.
-                let limit = std::env::var("HC_TEST_WATCHDOG_S").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
+                // Allow slower hosts the same budget as CI; keep an override for hang diagnosis.
+                let limit = std::env::var("HC_TEST_WATCHDOG_S").ok().and_then(|s| s.parse().ok()).unwrap_or(120);
                 std::thread::sleep(Duration::from_secs(limit));
                 eprintln!("test binary still running after {limit} s: cleaning up and aborting");
                 // Abort skips every Drop, so end this binary's sessions here first.
-                let ours = format!("/var/tmp/hc-test-{}-", std::process::id());
+                let ours = test_tmp().join(format!("hc-test-{}-", std::process::id())).display().to_string();
                 for pid in procs_with(&ours) {
                     unsafe { libc::kill(pid, libc::SIGKILL) };
                 }
-                for dir in std::fs::read_dir("/var/tmp").into_iter().flatten().flatten() {
+                for dir in std::fs::read_dir(test_tmp()).into_iter().flatten().flatten() {
                     if dir.path().display().to_string().starts_with(&ours) {
                         let _ = std::fs::remove_dir_all(dir.path());
                     }
@@ -47,8 +53,7 @@ impl Session {
                 std::process::abort();
             });
         });
-        let root =
-            PathBuf::from(format!("/var/tmp/hc-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let root = test_tmp().join(format!("hc-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&root);
         for dir in ["run", "state", "config"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
@@ -160,7 +165,7 @@ impl Drop for Session {
             let test = std::thread::current().name().unwrap_or("?").to_string();
             let note = format!("LEAK in {test}: pid {pid} ({}) still running after server stop\n", cmdline.trim());
             eprint!("{note}");
-            let log = std::fs::OpenOptions::new().create(true).append(true).open("/var/tmp/hc-test-leaks.log");
+            let log = std::fs::OpenOptions::new().create(true).append(true).open(test_tmp().join("hc-test-leaks.log"));
             let _ = log.and_then(|mut f| f.write_all(note.as_bytes()));
             unsafe { libc::kill(pid, libc::SIGKILL) };
             leaks.push(note);
@@ -281,6 +286,15 @@ pub fn script(s: &Session, body: &str) -> String {
         "r(){{ printf '\\033]7501;%s\\033\\\\' \"$1\"; }}; w(){{ while [ ! -e {}/$1 ]; do sleep 0.02; done; }}; {body}",
         s.root.display()
     )
+}
+
+/// A named executable fixture, so reporting agents are distinct from root shells.
+pub fn executable(s: &Session, source: &str) -> String {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let path = s.root.join(format!("program-{}", N.fetch_add(1, Ordering::Relaxed)));
+    std::fs::write(&path, source).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    path.to_str().unwrap().into()
 }
 
 /// Creates the file a script's `w <name>` waits for.

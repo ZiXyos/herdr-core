@@ -52,11 +52,11 @@ impl ControlTransport for Subprocess<'_> {
         let request = request.encode()?;
         // Session syntax was checked by the control client before this interpolation.
         let command = format!("herdr --session {session} remote-api-bridge");
-        let mut cmd = tokio::process::Command::from(self.to.command(
-            self.paths,
-            &["BatchMode=yes", "ConnectTimeout=10"],
-            &command,
-        ));
+        let cmd = self
+            .to
+            .command(self.paths, &["BatchMode=yes", "ConnectTimeout=10"], &command)
+            .map_err(|e| ControlError::new(&e.kind, e.message, e.hint))?;
+        let mut cmd = tokio::process::Command::from(cmd);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())

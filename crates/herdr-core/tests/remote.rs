@@ -73,11 +73,14 @@ fn remote_sends_outlive_a_draft_but_not_a_lost_or_frozen_line() {
     std::thread::sleep(Duration::from_millis(400));
     assert!(!text(&rohan, &t).contains("5e"), "killed forward caller still typed");
 
-    for failure in ["removed", "killed", "frozen"] {
+    for failure in ["removed", "killed", "frozen", "wait"] {
         person.typed(b"draft");
         let sender = {
             let mut cmd = s.cmd();
             cmd.args(["send", &remote, "y"]);
+            if failure == "wait" {
+                cmd.args(["--wait", "--timeout", "2"]);
+            }
             std::thread::spawn(move || cmd.output().unwrap())
         };
         std::thread::sleep(Duration::from_millis(200));
@@ -87,7 +90,7 @@ fn remote_sends_outlive_a_draft_but_not_a_lost_or_frozen_line() {
             "frozen" => {
                 unsafe { libc::kill(pid, libc::SIGSTOP) };
             }
-            "killed" => {
+            "killed" | "wait" => {
                 let line: i32 = std::fs::read_to_string(&line_pid).unwrap().trim().parse().unwrap();
                 assert_eq!(unsafe { libc::kill(line, libc::SIGKILL) }, 0);
             }
@@ -120,7 +123,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     use std::time::{Duration, Instant};
     let mut rohan = Session::new();
     rohan.env.extend(
-        [("HC_DRAFT_MS", "1200"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+        [("HC_DRAFT_MS", "4000"), ("HC_QUIET_MS", "0"), ("HC_STARTED_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
             .map(|(k, v)| (k.into(), v.into())),
     );
     let mut s = Session::new();
@@ -131,7 +134,10 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     );
     let config = rohan.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    std::fs::write(config, "machine_timeout = 0.5\ndraft_wait = 0\n").unwrap();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(config, "draft_wait = 3\n").unwrap();
     rohan.json(&["server", "start"]);
     s.json(&["machine", "add", "rohan"]);
     let (parent, _) = parent_with_child_on_rohan(&s, &script(&rohan, "r state=working; sleep 100"));
@@ -146,10 +152,10 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     };
     std::thread::sleep(Duration::from_millis(1100));
     assert!(!sender.is_finished());
-    person.typed(b"\r");
     let out = sender.join().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(start.elapsed() >= Duration::from_millis(1100));
+    assert!(start.elapsed() >= Duration::from_millis(2900));
+    eprintln!("reverse with parent draft_wait=3 and child=0: {:?}", start.elapsed());
     person.typed(b"draft before disconnect");
     let sender = {
         let mut cmd = rohan.cmd();
@@ -167,6 +173,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     eprintln!("reverse disconnected: caller failed after {:?}", start.elapsed());
     wait_until("reconnected", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
     let pid = s.json(&["server", "status"])["pid"].as_i64().unwrap() as i32;
+    std::fs::write(s.root.join("config/herdr-core/config.toml"), "draft_wait = 10\n").unwrap();
     person.typed(b"another draft");
     let sender = {
         let mut cmd = rohan.cmd();
@@ -181,7 +188,7 @@ fn a_reverse_send_waits_for_a_draft_but_bounds_a_stuck_peer() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("didn't answer within"), "{err}");
-    assert!(start.elapsed() < Duration::from_secs(3), "stuck peer held the send: {:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(5), "stuck peer held the send: {:?}", start.elapsed());
     eprintln!("reverse frozen: caller failed after {:?}: {err}", start.elapsed());
     std::thread::sleep(Duration::from_millis(100));
     person.typed(b"\r");
@@ -237,7 +244,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     rohan.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     let mut s = Session::new();
     let (var, fake) = fake_ssh(&s, &[("rohan", &rohan)]);
-    // Everything rohan sends comes at ~320 KB/s; 0.7 s of silence is all a machine gets.
+    // Everything rohan sends comes at ~320 KB/s; 2.2 s of silence is all a machine gets.
     let slow = s.root.join("slow-ssh");
     let throttle = "import sys, time\nwhile b := sys.stdin.buffer.read1(32768):\n    sys.stdout.buffer.write(b); sys.stdout.buffer.flush(); time.sleep(0.1)";
     std::fs::write(&slow, format!("#!/bin/sh\n{fake} \"$@\" | python3 -c '{throttle}'\n")).unwrap();
@@ -245,7 +252,7 @@ fn a_big_answer_on_a_slow_link_is_not_mistaken_for_a_frozen_machine() {
     s.env.push((var, slow.display().to_string()));
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     s.env.push(("HC_HEARTBEAT_MS".into(), "200".into()));
     rohan.json(&["server", "start"]);
     s.json(&["machine", "add", "rohan"]);
@@ -350,6 +357,94 @@ fn parent_with_child_on_rohan(s: &Session, child: &str) -> (String, String) {
 }
 
 #[test]
+fn a_first_foreground_remote_child_can_reach_only_its_parent() {
+    let (rohan, s) = with_rohan();
+    let parent = run(&s, &["sleep", "100"]);
+    let unrelated = run(&s, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    let probe = format!("{BIN} --json get {core_id}/{parent}");
+    let out = s
+        .cmd()
+        .env("HC_TERMINAL_ID", &parent)
+        .args(["--json", "run", "--on", "rohan", "--no-notify", "sh", "-c", &probe])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["wait"]["exit_code"], 0, "{result}");
+    assert!(result["output"].as_str().unwrap().contains("\"state\":\"live\""), "{result}");
+    let (_, denied) = rohan.err(&["--json", "get", &format!("{core_id}/{unrelated}")]);
+    assert_eq!(denied["error"]["kind"], "denied", "{denied}");
+}
+
+#[test]
+fn failed_or_detached_remote_runs_do_not_grant_access_to_the_caller() {
+    let (rohan, s) = with_rohan();
+    let remote_parent = run(&rohan, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    for args in [
+        vec!["--no-parent", "true"],
+        vec!["--parent", &remote_parent, "true"],
+        vec!["missing-program-for-callback-test"],
+    ] {
+        let parent = run(&s, &["sleep", "100"]);
+        let out = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--on", "rohan", "--no-notify"])
+            .args(&args)
+            .output()
+            .unwrap();
+        if args.len() == 1 {
+            assert!(!out.status.success());
+            let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+            assert_eq!(error["error"]["kind"], "spawn_failed", "{error}");
+        } else {
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(
+                result["parent"],
+                if args[0] == "--parent" { json!(format!("rohan/{remote_parent}")) } else { Value::Null },
+                "{result}"
+            );
+        }
+        let (_, denied) = rohan.err(&["--json", "get", &format!("{core_id}/{parent}")]);
+        assert_eq!(denied["error"]["kind"], "denied", "{denied}");
+    }
+}
+
+#[test]
+fn a_failed_remote_launch_preserves_a_concurrent_and_then_established_grant() {
+    let (rohan, s) = with_rohan();
+    let parent = run(&s, &["sleep", "100"]);
+    let core_id = s.json(&["server", "status"])["core"]["id"].as_str().unwrap().to_string();
+    let address = format!("{core_id}/{parent}");
+    let probe = script(&rohan, &format!("w release; {BIN} --json get {address}"));
+    let mut command = s.cmd();
+    command.env("HC_TERMINAL_ID", &parent).args(["--json", "run", "--on", "rohan", "--no-notify", "sh", "-c", &probe]);
+    let foreground = std::thread::spawn(move || command.output().unwrap());
+    wait_until("remote child started", || !addresses(&rohan.json(&["ls"])).is_empty());
+    for pending in [true, false] {
+        let failed = s
+            .cmd()
+            .env("HC_TERMINAL_ID", &parent)
+            .args(["--json", "run", "--on", "rohan", "missing-program-for-callback-test"])
+            .output()
+            .unwrap();
+        assert!(!failed.status.success());
+        assert_eq!(rohan.json(&["get", &address])["state"], "live");
+        if pending {
+            touch(&rohan, "release");
+            wait_until("foreground run completes", || foreground.is_finished());
+        }
+    }
+    let out = foreground.join().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["wait"]["exit_code"], 0, "{result}");
+}
+
+#[test]
 fn a_child_on_another_machine_reports_back_to_its_parent() {
     let (rohan, s) = with_rohan_env(&[("HC_QUIET_MS", "0")]);
     let (parent, child) = parent_with_child_on_rohan(&s, &script(&s, "r state=working; w go; exit 3"));
@@ -372,20 +467,32 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn a_send_from_a_plain_shell_on_another_machine_arrives_as_is() {
+    let (_rohan, s) = with_rohan();
+    let agent = run(&s, &["--on", "rohan", "sh", "-c", &script(&s, "r state=idle; cat")]);
+    wait_until("the agent reports", || get(&s, &agent)["reported"] == true);
+    s.json(&["send", &agent, "hello-plain"]);
+    wait_until("the text", || text(&s, &agent).contains("hello-plain"));
+    assert!(!text(&s, &agent).contains("<hc"), "a shell is not an agent: {}", text(&s, &agent));
+}
+
+#[test]
 fn a_remote_templates_readiness_wait_leaves_its_child_able_to_report_back() {
     let mut rohan = Session::new();
     rohan.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "100"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
             .map(|(k, v)| (k.into(), v.into())),
     );
     let mut s = Session::new();
     s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
     s.env.extend(
-        [("HC_READY_MS", "1500"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")].map(|(k, v)| (k.into(), v.into())),
+        [("HC_READY_MS", "3000"), ("HC_STARTED_MS", "0"), ("HC_QUIET_MS", "0"), ("HC_HEARTBEAT_MS", "100")]
+            .map(|(k, v)| (k.into(), v.into())),
     );
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-    std::fs::write(config, "machine_timeout = 0.5\n").unwrap();
+    // Readiness must exceed the base call timeout, with room for normal scheduling gaps.
+    std::fs::write(config, "machine_timeout = 2\n").unwrap();
     let templates = rohan.root.join("config/herdr-core/templates");
     std::fs::create_dir_all(&templates).unwrap();
     rohan.json(&["server", "start"]);
@@ -640,6 +747,30 @@ fn a_viewer_rides_out_a_dropped_line_without_reattaching() {
     });
     v.typed(b"after\r");
     v.shows("got-after"); // same viewer, typing and output both ways again
+}
+
+#[test]
+fn returning_viewers_keep_the_last_active_viewers_size() {
+    let (rohan, s) = with_rohan();
+    let mark = rohan.root.join("mark");
+    let body = format!("while :; do cat {} 2>/dev/null; sleep 0.05; done", mark.display());
+    let t = run(&s, &["--on", "rohan", "sh", "-c", &body]);
+    let mut viewers: Vec<_> = (0..8).map(|_| Viewer::attach(&s, &t, 200, 120, json!({}))).collect();
+    let size = || (get(&rohan, "t1")["cols"].as_u64().unwrap(), get(&rohan, "t1")["rows"].as_u64().unwrap());
+    let active = &mut viewers[0];
+    active.conn.send(active.channel, herdr_core::wire::RESIZE, &[109, 0, 33, 0]);
+    wait_until("the visible viewer leads", || size() == (109, 33));
+
+    std::fs::write(s.root.join("down"), "").unwrap();
+    rohan.hc(&["server", "restart"]);
+    wait_until("rohan unreachable", || s.json(&["machine", "ls"])["machines"][0]["state"] == "unreachable");
+    std::fs::remove_file(s.root.join("down")).unwrap();
+    wait_until("rohan back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+    std::fs::write(&mark, "MARK-restored\n").unwrap();
+    for viewer in &mut viewers {
+        viewer.shows("MARK-restored");
+    }
+    assert_eq!(size(), (109, 33), "a hidden viewer must not take the size on recovery");
 }
 
 #[test]

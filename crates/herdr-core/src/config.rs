@@ -2,7 +2,9 @@
 
 use crate::rpc::RpcError;
 use serde::Deserialize;
+use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
@@ -16,17 +18,35 @@ pub struct Config {
     /// or off (default on). Off: hc types nothing on its own.
     pub notes: Option<bool>,
     /// Seconds of quiet before a note (default 3); after Enter or a clear it goes in at once.
-    pub notes_quiet: Option<f64>,
+    #[serde(default, deserialize_with = "seconds")]
+    pub notes_quiet: Option<Duration>,
+    /// Seconds an unfinished draft holds sends and notes after the last key (default 60); 0 disables it.
+    #[serde(default, deserialize_with = "seconds")]
+    pub draft_wait: Option<Duration>,
     /// Size of a terminal nobody is typing in, `COLSxROWS` (default 200x120).
     pub headless: Option<String>,
     /// Scrollback kept per live terminal, in MB (default 5).
     pub history_mb: Option<f64>,
+    /// After a kept program is lost, show its last saved screen above the new shell (default off).
+    pub restore_screen: Option<bool>,
     /// Where the core listens (default under $XDG_RUNTIME_DIR). `HC_SOCKET` wins.
     pub socket: Option<String>,
     /// Seconds another machine gets to answer a call (a wait gets its own
     /// timeout on top), and to send anything at all before its line is
     /// given up and dialed again (default 30).
     pub machine_timeout: Option<f64>,
+}
+
+fn seconds<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+    Option::<f64>::deserialize(d)?
+        .map(|s| {
+            if !s.is_finite() {
+                return Err(serde::de::Error::custom("seconds must be finite and fit in a duration"));
+            }
+            Duration::try_from_secs_f64(s.max(0.0))
+                .map_err(|_| serde::de::Error::custom("seconds must be finite and fit in a duration"))
+        })
+        .transpose()
 }
 
 impl Config {
@@ -67,6 +87,17 @@ pub fn load(path: &Path) -> Result<Config, RpcError> {
     }
 }
 
+/// Delivery must keep running even while the config is being fixed.
+pub fn delivery(path: &Path) -> Config {
+    load(path).unwrap_or_else(|error| {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            let _ = writeln!(io::stderr(), "core: {}; using delivery defaults", error.message);
+        });
+        Config::default()
+    })
+}
+
 /// A detach chord: the control byte it sends, and its key code for the
 /// kitty and modifyOtherKeys encodings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -96,6 +127,18 @@ mod tests {
 
     fn key(spec: &str) -> Result<DetachKey, RpcError> {
         Config { detach_key: Some(spec.into()), ..Default::default() }.detach_key()
+    }
+
+    #[test]
+    fn delivery_seconds_keep_negative_quiet_compatible_and_reject_nonfinite_or_overflow() {
+        let c: Config = toml::from_str("notes_quiet = -1\nshell = ['sh']").unwrap();
+        assert_eq!(c.notes_quiet, Some(Duration::ZERO));
+        assert_eq!(c.shell().unwrap(), ["sh"]);
+        for setting in ["notes_quiet", "draft_wait"] {
+            for value in ["nan", "inf", "-inf", "1e100"] {
+                assert!(toml::from_str::<Config>(&format!("{setting} = {value}")).is_err());
+            }
+        }
     }
 
     #[test]

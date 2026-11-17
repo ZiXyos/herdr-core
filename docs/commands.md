@@ -61,6 +61,8 @@ Per command: hc <command> --help
 Settings: ~/.config/herdr-core/config.toml. notes = false: hc types nothing
 on its own (no notes to parent agents, no <hc> tags on messages).
 shell = ["nu"] overrides the shell for new terminals and keep recovery.
+draft_wait = 60: seconds a draft holds sends and notes after your last key;
+0 keeps only the quiet pause. Changes apply to the next delivery.
 
 Examples
   hc run --on vps "cd app && npm test"     like ssh, in a terminal that stays
@@ -260,6 +262,7 @@ Options:
       --terminal <TERMINAL>        Only this terminal
       --children-of <CHILDREN_OF>  Only children of this terminal
       --label <K=V>                Only terminals carrying all of these labels (repeatable)
+      --doc <NAME>                 Documents by name (repeatable); a name ending in `*` is a prefix. Naming narrows, so documents alone hear only them — name a terminal for both
   -h, --help                       Print help
 ```
 
@@ -498,7 +501,7 @@ Arguments:
 Options:
       --backend <BACKEND>  Remote protocol. Classic requires an explicit --session and never installs Core [default: modern] [possible values: modern, classic]
       --json               JSON output even in a terminal
-      --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name
+      --via <COMMAND>      Reach it with this command instead of ssh: it is given a shell line to run there as its last argument, like ssh (`ssh -p 2222 -i key user@ip`, `fly ssh console -a app --pty=false -C`). It must pass bytes both ways untouched and ask nothing. Needs --name. On Windows, a program and its arguments (CommandLineToArgvW split, no shell), with the remote line appended as one argument, no console window; Unix stays an sh line. WSL: --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl
       --temp               Mark it short-lived (a sandbox for a task), so clients can show it apart from machines that stay. hc treats it like any other; remove it with `hc machine rm`
       --install            Copy this hc there when it has none or one too old, without asking (for scripts; in a terminal you are asked)
       --name <NAME>        What to call it here (default: the target's host)
@@ -712,8 +715,9 @@ Restart the core (e.g. after an update); programs keep running
 Usage: hc server restart [OPTIONS]
 
 Options:
-      --json  JSON output even in a terminal
-  -h, --help  Print help
+      --fresh  Take this shell's environment for new terminals; run from a terminal outside Herdr
+      --json   JSON output even in a terminal
+  -h, --help   Print help
 ```
 
 ## hc server start

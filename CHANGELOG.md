@@ -2,8 +2,49 @@
 
 ## Unreleased
 
+### New
+- **A subscription can name the documents it wants, instead of receiving every one.** `hc events --doc <name>` (repeatable; a name ending in `*` is a prefix) delivers only those document changes, so a program that watches a single document no longer has every document change from every terminal delivered to it, and no longer has to filter them out itself. A subscriber that names none behaves exactly as before and still hears them all; a subscriber that selects a terminal and also names documents hears both.
+
+## [0.1.21] - 2026-11-12
+
+### New
+- **Remote Linux machines warn when their programs would stop at logout.** Where the machine's login settings end your programs once your last SSH login closes, `hc machine add`, `hc server status` and Herdr's machine list say so, with the one command that fixes it.
+- After a reboot, a kept terminal can show its program's last screen above the new shell, so you can see where you were. Turn it on with `restore_screen = true` in config.toml; it's off by default. (#260, thanks @sundarshahi)
+
 ### Fixed
-- Agent messages and parent notes wait for you to send or clear an unfinished draft, instead of submitting it with their message. A draft left alone holds messages for at most a minute. Sends to another machine wait too. (#64, thanks @pruett)
+- **On Windows, Herdr sees the program running in a PowerShell or cmd terminal,** so agents started from a shell show their name and status, and Ctrl+C on a plain program reports that it stopped. (#70, #72, thanks @yetone)
+- **On Windows, terminals start when PowerShell 7 is installed but its folder isn't on PATH.** Before, every new terminal failed. (herdr-app#967)
+- **A machine whose SSH login fails, like a passphrase key that isn't in an agent, no longer retries every few seconds.** It shows that it needs a login and retries after 2, 5, then every 10 minutes, so servers with fail2ban or CrowdSec don't ban you. A locked ssh-agent that unlocks later still reconnects by itself, and `hc machine login` reconnects at once.
+- Remote Linux cores started over SSH get your login profile's environment, so tools in `~/.local/bin` and the like are found in terminals there. (herdr-app#873)
+- Programs that ask whether the terminal can show images get the answer from the Herdr window showing them. (#241, thanks @factory-ain3sh)
+- After restarting Herdr while vim or less is open, the pane shows the right screen when the program exits.
+- `hc wait` on an agent that crashes or exits says `exit` with its code, as documented. (#221, thanks @connorburgess)
+- Calling `hc wait` many times no longer grows the core's memory. (#230, thanks @CMU02)
+- Watching a terminal with `hc attach --observe` no longer resizes it. (#199, thanks @deepcoldy)
+- After a core crash, apps see each agent's current status. (#183, thanks @abhijit-s)
+- The install script works on servers whose temp folder can't run programs, for installs and updates. (#116, thanks @y2hhbw)
+- The "line lost; reconnecting" notice shows even when the line drops in the middle of an image. (#236, thanks @aldanor)
+- `terminal.list` always includes `machines`, as the schema says. (#235, thanks @CMU02)
+
+## [0.1.20] - 2026-11-10
+
+### New
+- `hc server restart --fresh` takes your current shell's environment for new terminals without ending running programs. Run it from a terminal outside Herdr if an agent started Herdr with unwanted settings.
+- On Windows, `hc machine add --via` works: it takes a program and its arguments, so WSL can be a machine with `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`. (#128)
+
+### Fixed
+- **On macOS, quitting an app you started from a terminal no longer leaves a "running in background" entry that ends every terminal when you stop it.** Terminals opened before this update keep the old behavior until you close them: stopping such an entry can still end those older terminals, and on macOS 27 an app that left an entry before the update can leave one more. (#140)
+- **On macOS, terminals opened after you log out and back in work again:** they find your user, ssh works, and they use the new login's ssh agent. Terminals from before the logout keep running. (#210)
+- **On macOS, the core starts separately from the Herdr app, also right after login or a reboot.** Before, it often ended up running inside the app then, so force quitting Herdr ended those terminals.
+- Every terminal gets a real terminal type (`TERM=xterm-256color`), also when the command that started it ran in a shell with `TERM=dumb`, like an agent's, so tmux, vim and htop start. (#205)
+- `hc machine add` accepts a host whose name looks like a terminal id (`t440s` becomes the machine `t440s-2`), and `hc machine add user@host:2222` typed in a terminal works. (#206)
+- On Linux and macOS, when an agent exits back to your shell (bash, zsh, fish), its terminal stops showing the agent's last status. (#166, thanks @jorgeacortes)
+- `hc wait --output` finds text that arrived split in the middle of a character. (#129, thanks @chanyang721)
+- `hc keep --off` on a terminal that is already gone reports it as finished. (#125, thanks @chanyang721)
+- The core no longer spins when a kept terminal with helpers has lost its program. (#124, thanks @chanyang721)
+- A message sent from a plain shell on another machine arrives without an agent tag. (#119, thanks @CMU02)
+- A command run right while the core restarts no longer fails with "core did not start".
+- Agent messages and parent notes wait for you to send or clear an unfinished draft, instead of submitting it with their message. A draft left alone holds messages for at most a minute by default; `draft_wait` in config.toml sets the limit in seconds, and `0` keeps only the quiet pause. Sends to another machine wait too, once both machines are updated. (#64, thanks @pruett)
 
 ## [0.1.19] - 2026-11-07
 

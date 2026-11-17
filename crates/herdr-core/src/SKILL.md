@@ -101,7 +101,16 @@ children finish:
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
 Sends and parent notes wait for an unfinished draft, up to 60 seconds since
-the person's last key. Sends to an added machine keep waiting while its line is alive.
+the person's last key. Set `draft_wait = 5` (seconds) in
+`~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
+to change that limit; `0` keeps only the quiet pause. Like `notes_quiet`,
+it is read for each delivery and takes precedence over the test environment
+fallback (`HC_DRAFT_MS`). Both settings take finite seconds (a negative value means 0)
+that fit in a duration. If the config is invalid, delivery uses defaults and
+logs the config error once in `core.log`. Reverse sends allow at least the
+default 60-second hold, but a parent configured above that
+can still outwait a child with a shorter limit. Sends to an added machine keep
+waiting while its line is alive.
 
 Reports arrive tagged, for example:
 
@@ -169,10 +178,28 @@ Use the returned address to wait/read it; don't launch a duplicate.
 ## Other machines and files
 
 Your harness's own file tools touch only the machine you run on. Use hc for
-remote files and commands. `hc machine ls` lists configured machines; see
+remote files and commands. On Linux with systemd, hc tries to enable lingering.
+If denied and logind has a finite stop delay, machine add warns and machine ls
+marks `! stops at logout`: programs end when the account's last login closes.
+An infinite or unreadable delay reports unknown. Run the suggested
+`sudo loginctl enable-linger -- <user>` on
+that machine once; the warning clears after the next background check and status
+refresh. The core checks at startup, after its own enable attempt, and about
+every minute. Until the first check finishes, the result is unknown.
+JSON carries `keeps_running_after_logout` (true, false, or null when unknown /
+not applicable) and `logout_linger_user`, also in hello and server.status.
+
+`hc machine ls` lists configured machines; see
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
 Without `--name`, SSH machines use the first host label (IPs stay whole),
-shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
+shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken
+or looks like a terminal id (`t14` becomes `t14-2`).
+On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
+no shell), with the remote line appended as one argument, no console window;
+Unix stays an sh line. For WSL: `hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl`.
+
+A machine whose SSH login fails shows `needs_login` and retries slowly (up to
+every 10 minutes); `hc machine login <name>` in a terminal reconnects now.
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
@@ -189,6 +216,8 @@ hc file edit --on vps /srv/app/src/x.rs --old 'exact text' --new 'replacement'
 hc file write --on vps /srv/app/src/y.rs < content.txt
 ```
 
+`exec` ends the command and everything it started after 60 s by default
+(`--timeout S`, at most 600); use `run` for anything longer.
 `exec -i` feeds piped input to the command. File writes replace the whole
 file and create parent folders. Edits require the old text exactly once;
 `edit_failed` means add enough context to make it unique. Repeat `--old` and
@@ -224,9 +253,21 @@ before retrying. No agent status is read from a classic session.
 - State is `live` or `finished`. Status comes from the program's OSC 7501
   reports: `idle`, `working`, `done`, `blocked`, `error`; plain programs
   report none. Do not guess status from screen text.
+  On Unix, status clears when the root interactive shell returns to the foreground.
+  Direct programs and shell command/script wrappers keep status while their tools run.
+  Returning to a nested shell is not detected; a shell's own status and a backgrounded
+  agent's status clear. Windows and Unix PowerShell do not clear on shell return yet.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
+- A new Linux core started over SSH loads the account shell's non-interactive
+  login environment once, so remote terminals and commands can find programs
+  from login PATH settings. Local Linux starts, macOS and Windows are unchanged.
+  Reconnecting and crash recovery keep the loaded environment. Profiles have five
+  seconds and a combined 1 MiB output limit; remaining profile jobs are ended after
+  capture. A failed or blocked profile falls back to the incoming environment and records
+  the shell and reason in `core.log`. To refresh an existing remote core, run
+  `hc server restart --fresh` from a normal SSH login outside Herdr.
 - `hc run` without a command starts this machine's own shell. On macOS,
   this is a login shell so it loads the login environment; explicit commands
   are unchanged. Recovery shells use the same rule.
@@ -235,9 +276,12 @@ before retrying. No agent status is read from a classic session.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
-- Programs get the login session's environment. A local `DISPLAY` or
-  `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
-  connections. Host displays (including SSH forwarding) stay as they are.
+- Programs get the login session's environment with the core's terminal identity:
+  TERM=xterm-256color, COLORTERM=truecolor and TERM_PROGRAM=ghostty, with no
+  TERM_PROGRAM_VERSION. The caller's identity is not forwarded. Explicit API
+  `env` overrides still apply; kept replacement shells retain that identity.
+  A local `DISPLAY` or `WAYLAND_DISPLAY` is left out only when its socket is
+  missing or refuses connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
@@ -245,7 +289,13 @@ before retrying. No agent status is read from a classic session.
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
   on Linux, systemd stops the core before its holders. Ordinary exits and
-  explicit kills remain final. Streams end on loss; reattach after the
+  explicit kills remain final. Set `restore_screen = true` in
+  `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
+  to show the lost program's last saved screen above the new shell, separated
+  by a divider. It defaults to false and applies at the next recovery. On Windows,
+  the old screen is in history. `hc read` includes restored text, so scripts
+  reading it can match old output. Saved screens are consumed or discarded once; a power cut
+  that saves nothing starts blank. Streams end on loss; reattach after the
   restarted event. Pending input/attach may be unavailable: retry after recovery.
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
@@ -274,14 +324,28 @@ before retrying. No agent status is read from a classic session.
   bundled remote core: run `hc update` there instead. Root remotes receive the
   standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
-  app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
-  falls back to a direct child and logs the reason in `core.log`; that core may
-  end with its launching app.
-- Updates and `hc server restart` keep the environment the core started with;
-  stopping and starting takes a fresh one. Per-terminal API `env` overrides still
-  apply, as do Linux session and Windows registry refreshes. SIGTERM hands over
-  terminals/screens but does not save an environment. Preservation is best effort:
-  a failed save never blocks a restart. The private handoff expires after three
+  app doesn't end terminals. Startup explicitly requests that job once, including
+  during login when automatic launches may be deferred. SSH starts stay direct.
+  If launchd fails, startup falls back to a direct child and logs the reason in
+  `core.log`; that core may end with its launching app. A start timeout records
+  the job label, failed phase and available spawn state before cleanup.
+- On macOS, reopening Herdr after logout/login refreshes an older GUI core's
+  login context while keeping surviving terminals. New terminals use the new
+  login; existing programs retain their original OS context. An explicit
+  `hc server restart` from a healthy login also retires holders from another
+  login without ending their programs. Viewing a healthy SSH core does not
+  replace it, and lock/unlock does not rotate holders. Cores installed before
+  this session metadata need an update or explicit restart once.
+- Updates and `hc server restart` keep the environment the core started with.
+  Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
+  environment for new terminals without ending running programs. Existing
+  programs keep their environment; kept terminals use the fresh one after
+  recovery. Stopping and starting also takes a fresh environment. Per-terminal
+  API `env` overrides still apply, as do Linux session and Windows registry
+  refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
+  by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.
+  Preservation is best effort: a failed save never blocks a restart.
+  The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:
   a requested restart interrupted by a fast reboot can reuse it once. Session
   paths (HOME, XDG, HC_SESSION, HC_SOCKET) and service bookkeeping stay with the
