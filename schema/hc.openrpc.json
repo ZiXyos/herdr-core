@@ -475,10 +475,24 @@
               "$ref": "#/components/schemas/Pane"
             },
             "type": "array"
+          },
+          "tabs": {
+            "items": {
+              "$ref": "#/components/schemas/Tab"
+            },
+            "type": "array"
+          },
+          "workspaces": {
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
+            },
+            "type": "array"
           }
         },
         "required": [
-          "panes"
+          "panes",
+          "workspaces",
+          "tabs"
         ],
         "type": "object"
       },
@@ -674,6 +688,20 @@
       },
       "Pane": {
         "properties": {
+          "agent": {
+            "description": "Opaque name of the agent Herdr itself detected in this pane. Absent for a plain shell.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agent_status": {
+            "description": "Herdr's own report of that agent's state (\"idle\", \"working\", \"blocked\", \"done\", \"unknown\").\nPassed through as reported, only when an agent was detected; never inferred here.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cwd": {
             "type": [
               "string",
@@ -1323,6 +1351,35 @@
         ],
         "type": "object"
       },
+      "Tab": {
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tab_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "tab_id"
+        ],
+        "type": "object"
+      },
       "TemplateInfo": {
         "properties": {
           "command": {
@@ -1687,6 +1744,31 @@
           "reason",
           "turn",
           "children"
+        ],
+        "type": "object"
+      },
+      "Workspace": {
+        "properties": {
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id"
         ],
         "type": "object"
       }

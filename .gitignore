@@ -1,5 +1,4 @@
 /target
-/crates/hydra-engine/target
 /.local
 /AGENTS.local.md
 tools/

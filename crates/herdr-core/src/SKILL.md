@@ -209,6 +209,11 @@ hc classic read native w1:p1 term_RETURNED_BY_LIST --lines 100
 hc classic send native w1:p1 term_RETURNED_BY_LIST --text 'printf hello' --key enter
 ```
 
+`classic list` returns `panes`, `workspaces`, and `tabs` from one read-only
+snapshot, without opening a viewer or changing focus. Workspace/tab entries
+include opaque ids and optional `label` and `number` metadata; missing/null
+values are omitted, empty labels stay empty. List again to observe renames.
+
 Pane and runtime ids are opaque; use exactly what `classic list` returned. They
 are not terminal addresses: `hc ls` does not list classic panes, and attach,
 run, wait, read, files and `machine update` refuse a classic machine. `read`
