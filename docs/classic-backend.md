@@ -21,8 +21,13 @@ hc classic read native w1:p1 term_RETURNED_BY_LIST --lines 100
 hc classic send native w1:p1 term_RETURNED_BY_LIST --text 'printf hello' --key enter
 ```
 
-`classic list` gives each pane's id, its runtime id, and the workspace and tab
-it sits in. Use the pane and runtime ids exactly as returned; they are opaque.
+`classic list` returns `panes`, `workspaces`, and `tabs` from one read-only
+`session.snapshot`. Each pane includes its runtime id and the workspace and tab
+it sits in. Workspace entries include `workspace_id`; tab entries include
+`workspace_id` and `tab_id`. Both pass through optional `label` and `number`
+metadata. Missing or null labels/numbers are omitted; empty labels stay empty.
+List again to observe renames. All ids are opaque; use them exactly as returned.
+Discovery does not open a viewer, change focus, or mutate the session.
 `read` returns recent text (`read.text`), with the pane's workspace/tab,
 revision and whether it was truncated. `send` types `--text` literally and
 presses each `--key` (native classic key names, repeatable); Enter is never

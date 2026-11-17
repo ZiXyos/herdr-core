@@ -86,14 +86,42 @@ pub struct Pane {
     pub tab_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Opaque name of the agent Herdr itself detected in this pane. Absent for a plain shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Herdr's own report of that agent's state ("idle", "working", "blocked", "done", "unknown").
+    /// Passed through as reported, only when an agent was detected; never inferred here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<String>,
     /// Opaque native metadata, including optional client launch correlation.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub workspace_id: String,
+    pub tab_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
 pub struct Inventory {
     pub panes: Vec<Pane>,
+    pub workspaces: Vec<Workspace>,
+    pub tabs: Vec<Tab>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
@@ -177,17 +205,47 @@ pub async fn probe<T: ControlTransport + ?Sized>(transport: &T, session: &str) -
     }
 }
 
-fn inventory(v: Value) -> Result<Inventory, ControlError> {
-    serde_json::from_value(v).map_err(|_| protocol("invalid native pane inventory"))
+fn normalize_agents(panes: &mut [Pane]) {
+    for pane in panes {
+        // Herdr reports a placeholder status for every pane; it only means something for an agent.
+        if pane.agent.is_none() {
+            pane.agent_status = None;
+        }
+    }
 }
 
+/// One read-only snapshot keeps pane identities and workspace/tab labels from the same observation.
 pub async fn list<T: ControlTransport + ?Sized>(transport: &T, session: &str) -> Result<Inventory, ControlError> {
     check_session(session)?;
-    inventory(transport.exchange(session, Request { method: "pane.list", params: json!({}), mutation: false }).await?)
+    let mut v =
+        transport.exchange(session, Request { method: "session.snapshot", params: json!({}), mutation: false }).await?;
+    if v["type"] != "session_snapshot" {
+        return Err(protocol("invalid native session snapshot response"));
+    }
+    let mut inventory: Inventory =
+        serde_json::from_value(v["snapshot"].take()).map_err(|_| protocol("invalid native session snapshot"))?;
+    normalize_agents(&mut inventory.panes);
+    Ok(inventory)
 }
 
-pub(crate) fn correlate(panes: &Inventory, pane: &str, terminal: &str) -> Result<(), ControlError> {
-    if !panes.panes.iter().any(|p| p.pane_id == pane && p.terminal_id == terminal) {
+/// Identity checks need only panes, not the session's workspace/tab metadata.
+pub(crate) async fn list_panes<T: ControlTransport + ?Sized>(
+    transport: &T,
+    session: &str,
+) -> Result<Vec<Pane>, ControlError> {
+    #[derive(Deserialize)]
+    struct PaneList {
+        panes: Vec<Pane>,
+    }
+    check_session(session)?;
+    let v = transport.exchange(session, Request { method: "pane.list", params: json!({}), mutation: false }).await?;
+    let mut inventory: PaneList = serde_json::from_value(v).map_err(|_| protocol("invalid native pane inventory"))?;
+    normalize_agents(&mut inventory.panes);
+    Ok(inventory.panes)
+}
+
+pub(crate) fn correlate(panes: &[Pane], pane: &str, terminal: &str) -> Result<(), ControlError> {
+    if !panes.iter().any(|p| p.pane_id == pane && p.terminal_id == terminal) {
         return Err(ControlError::new(
             "classic_stale_identity",
             "native pane/runtime association no longer matches",
@@ -207,7 +265,7 @@ pub async fn read<T: ControlTransport + ?Sized>(
     if !(1..=1000).contains(&lines) {
         return Err(ControlError::invalid_params("lines must be 1..1000"));
     }
-    correlate(&list(transport, session).await?, pane_id, terminal_id)?;
+    correlate(&list_panes(transport, session).await?, pane_id, terminal_id)?;
     let v = transport
         .exchange(
             session,
@@ -235,7 +293,7 @@ pub async fn send<T: ControlTransport + ?Sized>(
     if input.text.len() > 65536 || input.keys.len() > 64 || input.keys.iter().any(|k| k.len() > 64) {
         return Err(ControlError::invalid_params("classic input limit: 64 KiB text, 64 keys of at most 64 bytes"));
     }
-    correlate(&list(transport, session).await?, input.pane_id, input.terminal_id)?;
+    correlate(&list_panes(transport, session).await?, input.pane_id, input.terminal_id)?;
     let v = transport
         .exchange(
             session,
@@ -267,15 +325,22 @@ mod tests {
     }
 
     #[test]
-    fn discovery_drops_vendor_status_and_preserves_opaque_ids() {
-        let panes = inventory(json!({"panes":[{
-            "pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1",
-            "agent_status":"working", "cwd":"/w1:p1"
-        }]}))
+    fn discovery_reports_detected_agents_and_preserves_opaque_ids() {
+        let mut panes: Vec<Pane> = serde_json::from_value(json!([
+            {"pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1",
+             "agent":"some-agent", "agent_status":"working", "cwd":"/w1:p1"},
+            {"pane_id":"w1:p2", "terminal_id":"term_shell", "workspace_id":"w1", "tab_id":"w1:t1",
+             "agent_status":"unknown"}
+        ]))
         .unwrap();
-        let v = serde_json::to_value(&panes).unwrap();
+        normalize_agents(&mut panes);
+        let v = json!({"panes": &panes});
         assert_eq!(v["panes"][0]["pane_id"], "w1:p1");
-        assert!(v["panes"][0].get("agent_status").is_none());
+        assert_eq!(v["panes"][0]["agent"], "some-agent");
+        assert_eq!(v["panes"][0]["agent_status"], "working");
+        // A shell has no agent, so Herdr's placeholder status is not presented as one.
+        assert!(v["panes"][1].get("agent").is_none());
+        assert!(v["panes"][1].get("agent_status").is_none());
         assert!(correlate(&panes, "w1:p1", "term_native").is_ok());
         assert_eq!(correlate(&panes, "w1:p1", "term_reused").unwrap_err().kind, "classic_stale_identity");
     }

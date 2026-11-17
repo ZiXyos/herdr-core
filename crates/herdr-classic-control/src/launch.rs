@@ -1,7 +1,7 @@
 //! Pane creation and process launch on the classic control API, shared by desktop `hc` and the
 //! embedded mobile engine so both validate, serialize and report outcomes identically.
 
-use crate::{ControlError, ControlTransport, Pane, Request, SendInput, correlate, list, lost, protocol, send};
+use crate::{ControlError, ControlTransport, Pane, Request, SendInput, correlate, list_panes, lost, protocol, send};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -214,7 +214,7 @@ pub async fn create<T: ControlTransport + ?Sized>(
     opaque(p.terminal_id, "terminal_id")?;
     let cwd = launch_cwd(p.cwd)?;
     let env = launch_env(p.env, p.launch_id, p.configuration_hash)?;
-    correlate(&list(transport, session).await?, p.target_pane_id, p.terminal_id)?;
+    correlate(&list_panes(transport, session).await?, p.target_pane_id, p.terminal_id)?;
     let params = json!({"target_pane_id":p.target_pane_id,"direction":p.direction,"focus":false,"cwd":cwd,"env":env});
     let v = transport.exchange(session, Request { method: "pane.split", params, mutation: true }).await?;
     if v["type"] != "pane_info" {
@@ -241,7 +241,7 @@ async fn process_info<T: ControlTransport + ?Sized>(
     pane_id: &str,
     terminal_id: &str,
 ) -> Result<ProcessInfo, ControlError> {
-    correlate(&list(transport, session).await?, pane_id, terminal_id)?;
+    correlate(&list_panes(transport, session).await?, pane_id, terminal_id)?;
     let request = Request { method: "pane.process_info", params: json!({"pane_id":pane_id}), mutation: false };
     let v: Value = transport.exchange(session, request).await?;
     if v["type"] != "pane_process_info" {

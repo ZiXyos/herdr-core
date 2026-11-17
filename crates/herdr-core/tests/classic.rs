@@ -28,8 +28,12 @@ r = json.loads(sys.stdin.readline())
 with open('{root}/calls', 'a') as f: f.write(r['method']+'\n')
 if r['method'] == 'ping':
     result = dict(type='pong', protocol=22, version='0.9.5')
-elif r['method'] == 'pane.list':
+elif r['method'] in ['pane.list', 'session.snapshot']:
     result = dict(panes=[dict(pane_id='w1:p1', terminal_id='term_native', workspace_id='w1', tab_id='w1:t1', agent_status='working')])
+    if r['method'] == 'session.snapshot':
+        result.update(workspaces=[dict(workspace_id='w1', label='Project', number=1)],
+            tabs=[dict(workspace_id='w1', tab_id='w1:t1', label='API', number=1)])
+        result = dict(type='session_snapshot', snapshot=result)
 elif r['method'] == 'pane.read':
     result = dict(type='pane_read', read=dict(pane_id='w1:p1', workspace_id='w1', tab_id='w1:t1', text='EXISTING', revision=0, truncated=False))
 elif r['method'] == 'pane.send_input':
@@ -78,9 +82,12 @@ fn classic_discovery_read_and_input_are_bounded_and_never_retried() {
     let original = s.json(&["classic", "list", "host"]);
     assert_eq!(
         original,
-        json!({"panes":[{"pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1"}]}),
+        json!({"panes":[{"pane_id":"w1:p1", "terminal_id":"term_native", "workspace_id":"w1", "tab_id":"w1:t1"}],
+            "workspaces":[{"workspace_id":"w1", "label":"Project", "number":1}],
+            "tabs":[{"workspace_id":"w1", "tab_id":"w1:t1", "label":"API", "number":1}]}),
         "opaque ids kept, vendor agent status dropped"
     );
+    assert_eq!(std::fs::read_to_string(s.root.join("calls")).unwrap(), "ping\nsession.snapshot\n");
     let (_, e) = s.err(&["--json", "classic", "send", "host", "w1:p1", "term_native"]);
     assert_eq!(e["error"]["kind"], "invalid_params", "nothing to send");
     let (_, e) = s.err(&["--json", "classic", "send", "host", "w1:p1", "stale", "--text", "no"]);
@@ -92,6 +99,8 @@ fn classic_discovery_read_and_input_are_bounded_and_never_retried() {
     let calls = std::fs::read_to_string(s.root.join("calls")).unwrap();
     assert_eq!(calls.matches("pane.send_input").count(), 1, "a lost acknowledgement is never retried");
     assert_eq!(calls.matches("ping").count(), 1, "probed once, at add; not before every call");
+    assert_eq!(calls.matches("session.snapshot").count(), 1, "only discovery fetches metadata");
+    assert_eq!(calls.matches("pane.list").count(), 3, "read/send identity checks stay lean");
     s.json(&["machine", "rename", "host", "native"]);
     s.json(&["server", "restart"]);
     assert_eq!(s.json(&["classic", "list", "native"]), original, "a saved profile survives a rename and a restart");
@@ -112,8 +121,11 @@ p2 = dict(pane_id='w1:p2', terminal_id='term_2', workspace_id='w1', tab_id='w1:t
 if os.path.exists('{root}/metadata'): p2['tokens'] = dict(hydra_launch_id='launch-1', hydra_configuration_hash='a'*64)
 if r['method'] == 'ping':
     result = dict(type='pong', protocol=22, version='0.9.5')
-elif r['method'] == 'pane.list':
+elif r['method'] in ['pane.list', 'session.snapshot']:
     result = dict(panes=[p1]+([p2] if os.path.exists('{root}/created') else []))
+    if r['method'] == 'session.snapshot':
+        result.update(workspaces=[dict(workspace_id='w1')], tabs=[dict(workspace_id='w1', tab_id='w1:t1')])
+        result = dict(type='session_snapshot', snapshot=result)
 elif r['method'] == 'pane.split':
     assert r['params']['focus'] is False
     assert r['params']['env']['HYDRA_LAUNCH_ID'] == 'launch-1'
