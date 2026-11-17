@@ -24,8 +24,10 @@ Linux builds are static. On Windows, templates and quoted shell commands need `s
 
 Run `hc update` to update. Running terminals keep running.
 Updates and `hc server restart` keep the environment the core started with;
-stopping and starting takes a fresh one. The update from an older core to 0.1.19
-uses the updater's environment once, because older cores can't save it for the next core.
+run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
+environment without ending programs. Stopping and starting also takes a fresh one.
+The update from an older core to 0.1.19 uses the updater's environment once,
+because older cores can't save it for the next core.
 
 If saving fails, the restart still goes ahead with the launcher's environment.
 Saved settings expire after three minutes and cannot carry over to another boot
@@ -54,6 +56,14 @@ For a terminal you want to keep even if its program is lost, use `hc run --keep`
 Recovery starts a fresh shell, never reruns the task.
 A normal exit or an explicit kill still ends it.
 
+To show a lost kept program's last saved screen above the new shell, set
+`restore_screen = true` in the same config.toml described below. It defaults
+to false. Changes apply at the next recovery. A divider marks where the old
+program ended; on Windows its screen is in history. `hc read` includes that
+old output, so scripts reading it can match text from the lost program. Each saved screen
+is consumed or discarded once, even with the setting off. A power cut that
+saves nothing starts blank.
+
 ## Default shell
 
 With no program, `hc run --bg` starts the machine's shell: `$SHELL` (or
@@ -75,6 +85,23 @@ needed. Running terminals, explicit programs, and quoted command lines keep
 their behavior. A bad setting reports a config error; a shell that cannot start
 reports `spawn_failed`. Recovery stays pending and retries, with errors in
 `core.log` (config) or `holder.log` (spawn); it never silently falls back to another shell.
+
+## Draft wait
+
+Sends and parent notes wait for you to send or clear an unfinished draft,
+up to 60 seconds after your last key. In the same config.toml:
+
+```toml
+notes_quiet = 3 # seconds of quiet before a parent note
+draft_wait = 60 # seconds a draft holds sends and notes; 0 keeps only the quiet pause
+```
+
+Both settings apply to the next delivery without restarting the core. Values must
+be finite seconds that fit in a duration (a negative value means 0). If the config is invalid,
+delivery uses defaults and logs the config error once in `core.log`.
+Reverse sends allow at least the default 60-second draft hold.
+A parent configured above 60 seconds can still outwait a child configured below
+that parent's limit and cause its reverse send to time out.
 
 ## Agents run agents
 
@@ -149,7 +176,7 @@ cargo build --locked -p herdr-core
 just check
 ```
 
-`just install` installs this checkout and restarts your core. Running terminals keep running.
+`just install` installs this checkout and restarts your core. Running terminals keep running. A running core keeps its environment; if none is running, the one it starts gets only the login's own variables (PATH, HOME, USER, SHELL, locale, SSH agent and markers, display, session paths; see `scripts/restart-core.sh`), never the rest of the build shell's.
 
 `just docs` refreshes the command reference. `just docs-check` checks it and the examples; CI runs the same tests.
 

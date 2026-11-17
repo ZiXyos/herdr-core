@@ -374,10 +374,32 @@ fn another_session_on_the_same_box_is_another_machine() {
 }
 
 #[test]
+fn interactive_add_uses_the_same_ssh_target_for_login_and_install() {
+    let mut bare = Session::new();
+    bare.bin = bare.root.join("bin/herdr-core");
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("bare", &bare)]);
+    let wrapper =
+        executable(&s, &format!("#!/bin/sh\n[ \"$1\" = ssh://can@bare:2222 ] || exit 255\nexec {ssh} \"$@\"\n"));
+    s.env.push(("HC_SSH".into(), wrapper));
+    let t = run(&s, &["sh", "-c", &format!("{BIN} machine add can@bare:2222 --install; echo added-$?; sleep 100")]);
+    wait_until("interactive add finished", || text(&s, &t).contains("added-"));
+    let screen = text(&s, &t);
+    assert!(screen.contains("added-0"), "{screen}");
+    assert_eq!(s.json(&["machine", "ls"])["machines"][0]["target"], "ssh://can@bare:2222");
+    bare.bin = bare.root.join(".local/bin/herdr-core");
+    assert!(bare.bin.exists(), "installed through the normalized target");
+}
+
+#[test]
 fn a_box_that_asks_for_a_code_is_added_from_a_terminal() {
     let rohan = Session::new();
     let mut s = Session::new();
-    s.env.push(fake_ssh(&s, &[("rohan", &rohan)]));
+    let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+    let attempts = s.root.join("ssh-attempts");
+    let wrapper = executable(&s, &format!("#!/bin/sh\necho dial >> {}\nexec {ssh} \"$@\"\n", attempts.display()));
+    s.env.push(("HC_SSH".into(), wrapper));
+    s.env.push(("HC_RECONNECT_MS".into(), "100".into()));
     let (_, piped) = s.err(&["--json", "machine", "add", "otp-rohan"]);
     assert_eq!(piped["error"]["kind"], "needs_login", "{piped}");
 
@@ -393,6 +415,9 @@ fn a_box_that_asks_for_a_code_is_added_from_a_terminal() {
     std::fs::remove_file(s.root.join("otp-ok")).unwrap();
     rohan.hc(&["server", "restart"]);
     wait_until("needs login", || s.json(&["machine", "ls"])["machines"][0]["state"] == "needs_login");
+    let before = std::fs::read_to_string(&attempts).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    assert_eq!(std::fs::read_to_string(&attempts).unwrap(), before, "authentication must not retry rapidly");
     let t = run(&s, &["sh", "-c", &format!("{BIN} machine login otp-rohan; sleep 100")]);
     wait_until("the code prompt", || text(&s, &t).contains("Verification code:"));
     s.json(&["send", &t, "123456"]);

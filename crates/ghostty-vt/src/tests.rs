@@ -118,6 +118,54 @@ fn a_painted_terminal_looks_the_same_on_a_fresh_one() {
 }
 
 #[test]
+fn attaching_on_alternate_screen_preserves_primary_when_the_program_exits() {
+    for mode in [47, 1047, 1049] {
+        for history in [0, 3] {
+            let mut source = Terminal::new(30, 4, 1 << 20);
+            for i in 0..8 {
+                source.write(format!("line {i}\r\n").as_bytes());
+            }
+            source.write(format!("\x1b[31mprompt> \x1b[?{mode}h\x1b[2;3HALT").as_bytes());
+            source.write(b"\x1b[");
+            let before = source.snapshot().unwrap();
+            let mut viewer = Terminal::new(30, 4, 1 << 20);
+            viewer.write(b"stale primary\x1b[?1049hSTALE ALT");
+            viewer.write(&source.paint(history));
+            assert_eq!(source.snapshot().unwrap(), before, "painting must not change the live terminal");
+            assert_eq!(viewer.screen_rows(), source.screen_rows());
+            viewer.write(&source.continuation().unwrap());
+            source.write(b"0m");
+            viewer.write(b"0m");
+            let exit = format!("\x1b[?{mode}lafter\r\n");
+            source.write(exit.as_bytes());
+            viewer.write(exit.as_bytes());
+            assert_eq!(viewer.screen_rows(), source.screen_rows(), "mode {mode}, history {history}");
+            if history > 0 {
+                assert!(viewer.plain_text().contains("line 3"), "primary history must also be replayed");
+            } else {
+                assert!(!viewer.plain_text().contains("line 3"), "history zero must not replay scrollback");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_primary_screens_pen_margins_and_charset_stay_out_of_the_alternate_replay() {
+    let mut source = Terminal::new(30, 6, 1 << 20);
+    // Red pen, a 2-4 scroll region and DEC line drawing on the primary screen.
+    source.write(b"one\r\ntwo\r\n\x1b[31m\x1b[2;4r\x1b(0\x1b[?1049h\x1b[0m\x1b(B\x1b[r\x1b[Hqwerty\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng");
+    let mut viewer = Terminal::new(30, 6, 1 << 20);
+    viewer.write(&source.paint(0));
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert_eq!(viewer.format(ffi::FORMAT_VT, None, false), source.format(ffi::FORMAT_VT, None, false));
+    for t in [&mut source, &mut viewer] {
+        t.write(b"\x1b[?1049lx\r\ny\r\nz");
+    }
+    assert_eq!(viewer.screen_rows(), source.screen_rows());
+    assert_eq!(viewer.format(ffi::FORMAT_VT, None, false), source.format(ffi::FORMAT_VT, None, false));
+}
+
+#[test]
 fn repaint_uses_the_active_screen_not_stale_alternate_screen_modes() {
     let mut t = Terminal::new(30, 4, 1 << 20);
     t.write(b"main\r\n\x1b[?47h\x1b[?1049hALT\x1b[?1049lDONE");
@@ -221,4 +269,34 @@ fn grapheme_clustering_is_on_like_ghostty() {
     assert_eq!(t.plain_text().trim_end(), "\u{270d}\u{fe0f}!");
     t.write(b"\x1bc");
     assert!(t.dec_mode(2027), "a reset keeps it on");
+}
+
+#[test]
+fn a_replay_carries_the_text_and_colors_but_not_the_programs_modes_or_title() {
+    let mut old = Terminal::new(80, 24, 1 << 20);
+    old.write(b"\x1b[?1000h\x1b[?2004h\x1b]2;old title\x1b\\");
+    for i in 0..30 {
+        old.write(format!("line-{i}\r\n").as_bytes());
+    }
+    old.write(b"\x1b[38;2;255;0;0mred\x1b[0m\r\n\r\n");
+    let replay = old.replay();
+    assert!(String::from_utf8_lossy(&replay).contains("255;0;0"), "{:?}", String::from_utf8_lossy(&replay));
+    let mut new = Terminal::new(80, 24, 1 << 20);
+    new.write(&replay);
+    let text = new.plain_text();
+    assert!(text.contains("line-0") && text.contains("line-29") && text.trim_end().ends_with("red"), "{text:?}");
+    assert!(!new.dec_mode(1000) && !new.dec_mode(2004) && new.title().is_empty());
+}
+
+#[test]
+fn a_replay_of_a_full_screen_program_keeps_what_it_hid_then_its_last_frame() {
+    let mut old = Terminal::new(80, 24, 1 << 20);
+    old.write(b"$ agent\r\n\x1b[?1049h\x1b[Hlast-frame");
+    let mut new = Terminal::new(80, 24, 1 << 20);
+    new.write(&old.replay());
+    let text = new.plain_text();
+    assert!(
+        !new.alt_screen() && text.find("$ agent") < text.find("last-frame") && text.contains("$ agent"),
+        "{text:?}"
+    );
 }

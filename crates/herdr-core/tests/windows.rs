@@ -12,6 +12,32 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
+
+#[test]
+fn via_runs_without_a_console_and_passes_the_remote_line_whole() {
+    let s = Session::new();
+    std::fs::create_dir_all(s.root.join("via dir")).unwrap();
+    let probe = s.file(
+        r"via dir\via.ps1",
+        r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ViaProbe {
+            [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'console.txt'), [ViaProbe]::GetConsoleWindow().ToInt64().ToString())
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'line.txt'), [Environment]::GetCommandLineArgs()[-1])
+$request = [Console]::ReadLine() | ConvertFrom-Json
+if ($request.method -ne 'hello') { exit 2 }
+[Console]::WriteLine('{"id":1,"error":{"code":-32000,"message":"via-probe","data":{"kind":"probe","hint":"done"}}}')
+"#,
+    );
+    let via = format!("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{probe}\"");
+    let output = cmd(&s.name, &s.root).args(["machine", "add", "--via", &via, "--name", "box"]).output().unwrap();
+    let error: Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));
+    assert_eq!(error["error"]["kind"], "probe", "{error}");
+    assert_eq!(std::fs::read_to_string(s.root.join("via dir/console.txt")).unwrap(), "0");
+    let line = std::fs::read_to_string(s.root.join("via dir/line.txt")).unwrap();
+    assert!(line.starts_with("sh -c 'p=$(command -v herdr-core)") && line.ends_with("exec \"$p\" connect'"), "{line}");
+}
+
 static LIVE: Mutex<Vec<(String, PathBuf)>> = Mutex::new(Vec::new());
 
 struct Session {
@@ -372,6 +398,63 @@ fn only_this_account_may_open_the_cores_pipe() {
     }
 }
 
+/// `hc connect` fed by `stdin`, its output once it exits (or a failure after 20 s).
+fn connect_once(s: &Session, stdin: std::process::Stdio, input: Option<&str>) -> String {
+    let mut child =
+        cmd(&s.name, &s.root).arg("connect").stdin(stdin).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    if let Some(input) = input {
+        // Closed right after: `printf '%s\n' "$REQ" | hc connect`.
+        std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    }
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output()));
+    let Ok(out) = rx.recv_timeout(Duration::from_secs(20)) else {
+        let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+        panic!("hc connect did not exit after its input ended");
+    };
+    let out = out.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn connect_answers_a_caller_that_is_done_sending() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    let get = |id: u32| json!({"jsonrpc": "2.0", "id": id, "method": "doc.get", "params": {"name": "probe"}});
+    let file = s.root.join("request.json");
+    std::fs::write(&file, format!("{}\n", get(1))).unwrap();
+    for _ in 0..5 {
+        for out in [
+            connect_once(&s, std::process::Stdio::piped(), Some(&format!("{}\n", get(1)))),
+            connect_once(&s, std::fs::File::open(&file).unwrap().into(), None),
+        ] {
+            let reply: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out:?}"));
+            assert_eq!(reply["id"], 1, "{out}");
+            assert_eq!(reply["result"]["version"], 0, "{out}");
+        }
+        // Nothing owed at all: its input ends before it ever reads.
+        assert_eq!(connect_once(&s, std::process::Stdio::null(), None), "");
+    }
+    // One reply per answered line: none for a notification or a blank line, even without a final newline.
+    let notification = json!({"jsonrpc": "2.0", "method": "doc.get", "params": {"name": "probe"}});
+    let input = format!("{}\n{notification}\n\nnot json\n{}", get(1), get(2));
+    let out = connect_once(&s, std::process::Stdio::piped(), Some(&input));
+    let ids: Vec<Value> = out.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].clone()).collect();
+    assert_eq!(ids, [json!(1), Value::Null, json!(2)], "{out}");
+    // A subscription or a framed hello still ends with its own reply, as on Unix.
+    for last in [
+        json!({"jsonrpc": "2.0", "id": 3, "method": "events.subscribe", "params": {}}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "hello", "params": {"framed": true}}),
+    ] {
+        let out = connect_once(&s, std::process::Stdio::piped(), Some(&format!("{last}\n")));
+        let first = out.lines().next().unwrap_or_default();
+        let reply: Value = serde_json::from_str(first).unwrap_or_else(|e| panic!("{e}: {out:?}"));
+        assert_eq!(reply["id"], 3, "{out}");
+    }
+}
+
 #[test]
 fn status_does_not_start_a_core() {
     let s = Session::new();
@@ -528,7 +611,12 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let _ = conn.wait();
     let reply: Value = serde_json::from_str(&reply).unwrap();
     let shell = reply["result"]["argv"][0].as_str().unwrap_or_default().to_string();
-    assert!(shell == "pwsh.exe" || shell == "powershell.exe", "{reply}");
+    let path = Path::new(&shell);
+    assert!(
+        shell == "powershell.exe"
+            || (path.is_absolute() && path.file_name().is_some_and(|name| name == "pwsh.exe") && path.is_file()),
+        "{reply}"
+    );
 }
 
 #[test]
@@ -651,6 +739,32 @@ fn planned_restarts_preserve_the_environment_for_new_terminals() {
 }
 
 #[test]
+fn fresh_restart_uses_the_callers_environment_and_keeps_running_programs() {
+    let s = Session::new();
+    let started = cmd(&s.name, &s.root)
+        .env("NO_COLOR", "1")
+        .env("HC_SESSION_VALUE", "dirty")
+        .args(["server", "start"])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+    let t = s.bg(&["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 100"]);
+    let pid = s.json(&["get", &t])["pid"].clone();
+    let out = cmd(&s.name, &s.root)
+        .env_remove("NO_COLOR")
+        .env("HC_SESSION_VALUE", "fresh")
+        .args(["server", "restart", "--fresh"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(s.json(&["get", &t])["pid"], pid);
+    let probe = s.file("fresh.ps1", r#"Write-Output "ENV:$env:NO_COLOR|$env:HC_SESSION_VALUE""#);
+    let (code, out) = s.out(&["run", "--timeout", "15", "powershell", "-NoProfile", "-File", &probe]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("ENV:|fresh"), "{out}");
+}
+
+#[test]
 fn a_copied_disks_restart_environment_does_not_replace_the_new_machines() {
     let s = Session::new();
     let machine = herdr_core::platform::machine_id().expect("Windows machine ID");
@@ -730,6 +844,19 @@ fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
     let core = after["pid"].as_u64().unwrap();
     s.json(&["server", "stop"]);
     wait_until("nothing left", || ![program, holder, core].into_iter().any(alive));
+}
+
+#[test]
+fn what_a_shell_runs_is_in_front_until_it_ends() {
+    let s = Session::new();
+    let t = s.bg(&["cmd.exe"]);
+    let front = || s.json(&["get", &t])["foreground"]["name"].as_str().unwrap_or_default().to_lowercase();
+    wait_until("the shell in front", || front() == "cmd.exe");
+    s.out(&["send", &t, "ping -n 60 127.0.0.1"]);
+    wait_until("ping in front", || front() == "ping.exe");
+    let stop = s.json(&["interrupt", &t, "--timeout", "10"]);
+    assert_eq!(stop["outcome"], "stopped", "the shell got the terminal back: {stop}");
+    wait_until("the shell in front again", || front() == "cmd.exe");
 }
 
 #[test]
@@ -848,4 +975,24 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
         let err: Value = serde_json::from_slice(&out.stderr).unwrap();
         assert_eq!(err["error"]["kind"], kind, "{err}");
     }
+}
+
+#[test]
+fn a_lost_kept_terminal_shows_what_its_program_left_above_the_new_shell() {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "restore_screen = true\n").unwrap();
+    let t = s.bg(&["--keep", "cmd.exe", "/c", "echo left-on-screen& ping -n 120 127.0.0.1 >nul"]);
+    let text = |t: &str| s.out(&["read", t, "--lines", "200"]).1;
+    wait_until("output", || text(&t).contains("left-on-screen"));
+    let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+    wait_until("new shell", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != old));
+    s.out(&["send", &t, "echo ('after-' + 2)"]);
+    wait_until("new shell answers", || text(&t).contains("after-2"));
+    let text = text(&t);
+    let at = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle:?} missing: {text:?}"));
+    assert!(at("left-on-screen") < at("this is a new shell") && at("this is a new shell") < at("after-2"), "{text:?}");
 }

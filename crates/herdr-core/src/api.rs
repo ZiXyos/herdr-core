@@ -9,20 +9,34 @@ use crate::terminals::{NewTerminal, Public, Terminal};
 use crate::wait::{WaitResult, WaitSpec};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] =
-    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input", "classic_control"];
+pub const FEATURES: &[&str] = &[
+    "framed",
+    "attach",
+    "events",
+    "status",
+    "shell",
+    "resize_notifications",
+    "automatic_input",
+    "restart_environment",
+    "put_chunks",
+    "classic_control",
+];
 pub const FINISHED_LINES: usize = 1000;
-/// A terminal's identity: fixed at start from whoever starts it.
+/// Terminal identity variables replaced by the core's defaults unless explicitly overridden.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
 
 mod doc;
+mod put;
 mod run;
 mod types;
 use doc::*;
+use put::*;
+pub use put::{begin_read, forget_puts};
 mod waiting;
 use run::*;
 pub(crate) use run::{child_env, not_stopping, tail, terminal_env};
@@ -63,9 +77,9 @@ methods! { Ctx<'_>;
     "server.stop" => server_stop, Empty => StopResult,
         "Stop the core and its programs. Kept terminals remain pending and get new shells when the core next starts.",
         errors [];
-    "server.restart" => server_restart, Empty => StopResult,
+    "server.restart" => server_restart, RestartParams => StopResult,
         "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-        errors [];
+        errors ["invalid_params"];
     "terminal.run" => terminal_run, RunParams => RunResult,
         "Start a program in a new terminal; or, when argv[0] names a template, start its command and send its body plus the rest of argv as the first message once the agent is ready. Returns once it runs (and the first message is sent or not).",
         errors ["invalid_params", "name_taken", "spawn_failed", "unavailable", "invalid_template", "not_found", "machine_unknown", "config"];
@@ -97,7 +111,7 @@ methods! { Ctx<'_>;
         errors ["not_found", "machine_unknown", "finished", "unavailable", "needs_framed"];
     "terminal.send" => terminal_send, SendParams => SendResult,
         "Paste text and press Enter after a person sends or clears their draft (at most 60 s since their last key), otherwise after ~3 s of quiet. Keys pressed during delivery are held, then delivered. Refuses a blocked program unless `force`.",
-        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config"];
+        errors ["not_found", "machine_unknown", "finished", "unavailable", "blocked", "status_mismatch", "invalid_params", "config", "cancelled"];
     "terminal.wait" => terminal_wait, WaitParams => crate::wait::WaitResult,
         "Wait until the program is not working (any word but working, or it exited/was lost); already not working returns at once. A program that never reported status is working until it exits. After a send from the same caller, waits for the turn that send started. A message to the caller also ends it: ended false, reason message, from = sender. A timeout is a check-in: ended false, current status.",
         errors ["not_found", "machine_unknown", "invalid_params", "needs_target", "config"];
@@ -108,8 +122,20 @@ methods! { Ctx<'_>;
         "Press the stop key (esc if it reports status, else ctrl+c), then report what was observed. Never escalates.",
         errors ["not_found", "machine_unknown", "finished", "unavailable", "invalid_params"];
     "terminal.put" => terminal_put, PutParams => PutResult,
-        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). Types nothing: paste the path yourself.",
-        errors ["not_found", "machine_unknown", "finished", "invalid_params"];
+        "Write bytes to a file beside a live terminal, on its machine, for its program to read (a pasted image). Lands in a folder of its own, removed with the terminal; the name is kept (a suffix when taken). To another machine it travels in pieces between other traffic, for as long as the link needs. Types nothing: paste the path yourself.",
+        errors ["not_found", "machine_unknown", "finished", "invalid_params", "unavailable"];
+    "terminal.put_begin" => terminal_put_begin, PutBeginParams => PutBeginResult,
+        "Between cores: begin a put that comes in pieces, so a big file never holds up a line. The file appears only once finished.",
+        errors ["not_found", "finished", "invalid_params", "unavailable", "needs_framed"];
+    "terminal.put_chunk" => terminal_put_chunk, PutPieceParams => PutPieceResult,
+        "Between cores: the next piece of a put, at exactly the offset received so far. Answers once written.",
+        errors ["not_found", "invalid_params", "needs_framed"];
+    "terminal.put_finish" => terminal_put_finish, PutTransferParams => PutResult,
+        "Between cores: the put is whole: the file lands as terminal.put lands it, never replacing another.",
+        errors ["not_found", "finished", "invalid_params", "needs_framed"];
+    "terminal.put_abort" => terminal_put_abort, PutTransferParams => Empty,
+        "Between cores: give up a put; what came is removed. Also happens when its connection or terminal goes.",
+        errors ["needs_framed"];
     "machine.exec" => machine_exec, ExecParams => ExecResult,
         "Run one program here or on a machine (`on`) without a terminal; return its exit code and exactly what it wrote (base64). `argv` runs as given, `line` in that machine's shell. Everything it started ends with it: at its exit, at `timeout` (default 60 s), or when the caller goes away. A nonzero exit or a timeout is a result, not an error.",
         errors ["invalid_params", "spawn_failed", "machine_unknown", "unavailable", "needs_update"];
@@ -192,6 +218,7 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
             format!("this core speaks generation {GENERATION}"),
         ));
     }
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
     Ok(HelloResult {
         generation: GENERATION,
         version: version(),
@@ -199,10 +226,14 @@ async fn hello(core: Ctx<'_>, p: HelloParams) -> Result<HelloResult, RpcError> {
         framed: p.framed,
         methods: METHOD_NAMES.iter().map(|m| m.to_string()).collect(),
         features: FEATURES.iter().map(|f| f.to_string()).collect(),
+        login_session: core.login_session,
+        keeps_running_after_logout,
+        logout_linger_user,
     })
 }
 
 async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError> {
+    let (keeps_running_after_logout, logout_linger_user) = crate::platform::logout_linger();
     let st = core.lock();
     let live = st.reg.terminals.values().filter(|t| t.is_live()).count();
     let holders: Vec<HolderInfo> = st
@@ -230,6 +261,8 @@ async fn server_status(core: Ctx<'_>, _: Empty) -> Result<StatusResult, RpcError
         live,
         finished: st.reg.terminals.len() - live,
         installed_by: crate::client::installed_by().map(String::from),
+        keeps_running_after_logout,
+        logout_linger_user,
     })
 }
 
@@ -239,13 +272,19 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     }
     crate::restart::discard(&core.paths);
     if let Err(e) = core.shutdown().await {
-        eprintln!("core: shutdown registry flush failed: {}", e.message);
+        let _ = writeln!(io::stderr(), "core: shutdown registry flush failed: {}", e.message);
     }
     Ok(StopResult { stopped: true })
 }
 
-async fn server_restart(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
-    crate::restart::prepare(core).map_err(|e| RpcError::internal(e.to_string()))?;
+async fn server_restart(core: Ctx<'_>, p: RestartParams) -> Result<StopResult, RpcError> {
+    crate::restart::prepare(core, p.environment).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidInput {
+            RpcError::invalid_params(e.to_string())
+        } else {
+            RpcError::internal(e.to_string())
+        }
+    })?;
     Ok(StopResult { stopped: true })
 }
 
@@ -337,14 +376,13 @@ async fn terminal_rm(core: Ctx<'_>, p: TerminalParams) -> Result<RemoveResult, R
 
 async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    let public = {
+    {
         let mut st = core.lock();
         let t = st.reg.terminals.get_mut(&id).expect("resolved");
         if !t.is_live() {
             return Err(RpcError::invalid_params("only live terminals can be kept"));
         }
         t.keep = p.keep;
-        let public = Public(t.clone());
         let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
         core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
         if let Some(reason) = lost {
@@ -352,10 +390,10 @@ async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError>
             core.changed.notify_waiters();
         }
         core.save(&st);
-        public
-    };
+    }
+    let result = record(core, id).map(Public);
     core.flush_saved().await?;
-    Ok(public)
+    result
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {
@@ -536,28 +574,6 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, RpcError> + S
     tokio::task::spawn_blocking(f).await.map_err(|e| RpcError::internal(e.to_string()))?
 }
 
-async fn terminal_put(core: Ctx<'_>, p: PutParams) -> Result<PutResult, RpcError> {
-    let too_big = || RpcError::invalid_params(format!("at most {} MB per put", crate::put::MAX_BYTES >> 20));
-    if p.data.len() / 4 * 3 > crate::put::MAX_BYTES + 3 {
-        return Err(too_big());
-    }
-    let bytes = crate::put::decode(&p.data).ok_or_else(|| RpcError::invalid_params("data is not base64"))?;
-    if bytes.len() > crate::put::MAX_BYTES {
-        return Err(too_big());
-    }
-    let id = resolve(core, &p.terminal)?;
-    if !record(core, id)?.is_live() {
-        return Err(RpcError::new(
-            "finished",
-            format!("{} has finished", crate::terminals::address(id)),
-            "nothing there to read it",
-        ));
-    }
-    let path = crate::put::stage(&core.paths.state, id, &p.name, &bytes)
-        .map_err(|e| RpcError::internal(format!("cannot write the file: {e}")))?;
-    Ok(PutResult { path: path.display().to_string(), bytes: bytes.len() })
-}
-
 async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcError> {
     let id = resolve(core, &p.terminal)?;
     let (status, turn) = core.keys(id, &p.keys).await?;
@@ -590,7 +606,7 @@ async fn events_subscribe(core: Ctx<'_>, p: SubscribeParams) -> Result<Subscribe
     };
     let terminal = p.terminal.as_deref().map(address).transpose()?;
     let children_of = p.children_of.as_deref().map(address).transpose()?;
-    let filter = Filter { terminal, children_of, labels: labels(&p.labels), here_only: from_afar(core) };
+    let filter = Filter { terminal, children_of, labels: labels(&p.labels), docs: p.docs, here_only: from_afar(core) };
     let (sink, channel) = match (core.conn, core.plain) {
         (Some(conn), _) => {
             let channel = conn.new_channel();
@@ -680,6 +696,8 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
             session: p.session,
             id: String::new(),
             version,
+            keeps_running_after_logout: None,
+            logout_linger_user: None,
         };
         st.machines.push(machine.clone());
         crate::machines::save(&core.paths.state, &st.machines);
@@ -698,6 +716,8 @@ async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machin
         id: text("id"),
         host: text("name"),
         version: hello["version"].as_str().unwrap_or_default().into(),
+        keeps_running_after_logout: hello["keeps_running_after_logout"].as_bool(),
+        logout_linger_user: hello["logout_linger_user"].as_str().map(String::from),
     };
     if machine.id == core.info.id {
         return Err(RpcError::invalid_params(format!("{} is this core", machine.target))

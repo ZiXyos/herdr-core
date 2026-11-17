@@ -1,7 +1,19 @@
 # Machines
 
 Run a program on another machine and come back to it from here.
-The program lives there. Losing your connection does not end it.
+The program lives there. On Linux with systemd, hc tries to enable lingering
+so it survives your last login ending. If the server refuses and logind has a finite stop delay,
+adding still succeeds with a warning and `hc machine ls` shows `! stops at logout`.
+Run the suggested `sudo loginctl enable-linger -- <user>` on that machine once.
+The warning clears automatically when an administrator enables it.
+
+The API reports `keeps_running_after_logout` and `logout_linger_user` in
+`hello`, `server.status` and machine results. False means lingering is off
+and logind has a finite user stop delay. An infinite or unreadable delay
+returns null, as do older cores and other OSes. Checks run in the background
+at startup, after the core's own enable attempt, and about every minute.
+Until the first check finishes, the result is null.
+This reports logout protection, not survival across a reboot.
 
 [Back to the README](../README.md) · [Command reference](commands.md#hc-machine)
 
@@ -19,6 +31,30 @@ hc machine add user@host --name box
 hc machine ls
 hc run --on box --cwd /srv/app cargo test
 ```
+
+The target can be any of these:
+
+| You write | ssh connects to |
+| --- | --- |
+| `vps` | the Host `vps` from `~/.ssh/config` (its user, port and key) |
+| `user@10.0.0.7` | `10.0.0.7` as `user`, on port 22 |
+| `user@10.0.0.7:2222` | `10.0.0.7` as `user`, on port 2222 |
+| `ssh://user@10.0.0.7:2222` | the same, in ssh's own URL form |
+
+A port goes after a colon, as in `user@host:2222`; hc passes it to ssh as `ssh://user@host:2222`.
+For a machine you use often, a Host entry keeps the details in one place:
+
+```text
+Host box
+  HostName 10.0.0.7
+  Port 2222
+  User user
+```
+
+Then `hc machine add box` is enough. The same targets work in Herdr's add-machine dialog, which also lists the Hosts from your SSH config.
+
+Without `--name`, the first host label becomes its name (IPs stay whole), shortened to 32 characters.
+Names that are taken or look like terminal ids get a numbered suffix: `t14` becomes `t14-2`.
 
 The other machine needs hc. In an interactive terminal, add asks before copying hc there if it is missing or too old to talk to.
 For a script, `hc machine add user@host --name box --install` allows that copy without asking.
@@ -41,13 +77,28 @@ A custom connection command receives a shell line as its last argument.
 It must carry stdin and stdout unchanged and ask no questions:
 
 ```sh
-hc machine add --name box --via 'ssh -p 2222 -i /home/me/.ssh/key user@host'
+hc machine add --name box --via 'ssh -i /home/me/.ssh/key -o ProxyJump=bastion user@host'
 hc machine add --name sandbox --temp --via 'fly ssh console -a my-app --pty=false -C'
 ```
 
 The command runs on your local machine. The shell line runs on the destination and connects to hc there.
 Log in with that tool first if it needs credentials.
 The temporary marker only helps clients show short-lived machines apart; it does not delete anything for you.
+
+On Windows, `--via` is a program and its arguments (CommandLineToArgvW split,
+no shell), with the remote line appended as one argument, no console window.
+Double quotes keep an executable path or argument with spaces together.
+Unix stays an sh line.
+Name the `.exe` explicitly, or use the full path to a `.cmd` shim; bare names
+do not search Windows' other executable extensions (PATHEXT).
+Type a quoted `--via` command from PowerShell 7 (`pwsh`): Windows PowerShell 5.1
+and cmd mangle embedded quotes.
+
+For a WSL distro, without an SSH server:
+
+```powershell
+hc machine add --via 'wsl.exe -d Ubuntu -e sh -c' --name wsl
+```
 
 ### Vercel Sandbox
 
@@ -103,6 +154,9 @@ Write replaces the whole file and creates parent folders.
 Edit requires the old text exactly once. Add context if it is missing or repeated.
 Repeat old/new pairs for several edits; all succeed or none do.
 `hc put box/build ./report.txt` sends a local file beside that terminal and prints where it landed.
+It travels in small pieces, so typing and other calls to that machine keep going on a slow link,
+and it takes as long as the link needs. A machine with an hc older than this one gets the file in one piece,
+which holds up everything else on its connection and gives up after `machine_timeout`.
 
 ## When something goes wrong
 
@@ -113,5 +167,8 @@ Repeat old/new pairs for several edits; all succeed or none do.
 - With a custom connection, check that it passes bytes unchanged and does not prompt. Do not request a remote PTY.
 - If a socket path is too long, use a shorter session name or socket path. See [state and endpoints](security.md#state-and-endpoints).
 
-Once a machine is added, core retries a lost connection. Reattach after it returns.
+Once a machine is added, core retries a lost connection. If SSH authentication fails,
+it shows `needs_login` and retries after 2 minutes, then 5 minutes, then every 10 minutes.
+Run `hc machine login box` in a terminal to log in and reconnect immediately.
+A successful connection resets these delays. Reattach after it returns.
 To forget the connection here, use `hc machine rm box`. That does not stop its remote terminals.

@@ -711,6 +711,16 @@ impl Terminal {
 \x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l\x1b[?2004l\x1b[?1l\x1b[?66l\x1b[?2031l\x1b[?2048l\x1b[=0;1u\
 \x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[H\x1b[2J"
             .to_vec();
+        // The formatter only exposes the active screen. Leave alternate mode
+        // on a snapshot so the viewer also gets its hidden primary screen,
+        // without changing the live terminal or consuming its partial VT input.
+        if self.alt_screen()
+            && let Some(snapshot) = self.snapshot()
+            && let Some(mut primary) = Self::restore(&snapshot, usize::MAX)
+        {
+            primary.write(b"\x18\x1b[?1049l");
+            out = primary.paint(history);
+        }
         let available = self.history_rows();
         if history > 0 && available > 0 && !self.alt_screen() {
             let from = available.saturating_sub(history as u32);
@@ -722,7 +732,8 @@ impl Terminal {
             }
         }
         if self.alt_screen() {
-            out.extend(b"\x1b[?1049h");
+            // The primary screen's pen, margins and charsets must not leak into this one.
+            out.extend(b"\x1b[?1049h\x1b[!p");
         }
         if let Some(sel) = self.select(ffi::POINT_ACTIVE, (0, 0), last) {
             let screen = self.format(ffi::FORMAT_VT, Some(&sel), true);
@@ -734,6 +745,26 @@ impl Terminal {
         let title = self.title();
         if !title.is_empty() {
             out.extend(format!("\x1b]2;{title}\x1b\\").as_bytes());
+        }
+        out
+    }
+
+    /// The active screen and its scrollback with their colors, but no modes,
+    /// cursor or title: what a program left, to show above whatever runs next.
+    pub fn replay(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        // A full-screen program's last frame goes below the primary screen and scrollback it hid.
+        if self.alt_screen()
+            && let Some(snapshot) = self.snapshot()
+            && let Some(mut primary) = Self::restore(&snapshot, usize::MAX)
+        {
+            primary.write(b"\x18\x1b[?1049l");
+            out = primary.replay();
+            out.extend(b"\x1b[0m\r\n");
+        }
+        out.extend(self.format(ffi::FORMAT_VT, None, false));
+        while out.last().is_some_and(|b| b" \r\n".contains(b)) {
+            out.pop();
         }
         out
     }
